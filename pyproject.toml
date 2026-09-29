@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfsearch"
+version = "0.1.0"
+description = "PDF -> Markdown -> 向量化 -> 混合检索 的企业级文档检索引擎"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "your-name" }]
+dependencies = [
+    "PyMuPDF>=1.24",
+    "torch>=2.0",
+    "transformers>=4.40",
+    "tokenizers>=0.19",
+    "qdrant-client>=1.9",
+    "rank-bm25>=0.2",
+    "jieba>=0.42",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+ocr = ["paddleocr>=3.0", "paddlepaddle>=3.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+pdfsearch = "pdfsearch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
