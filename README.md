@@ -77,6 +77,28 @@ PDF
 - 向量化：BGE-M3 在 **CPU 上较慢**（千级 chunk 约十几分钟），强烈建议 `embed.device: cuda`（3060 可提速约 10~50 倍）。
 - 千份 PDF 建议离线批量 + 断点续跑（后续版本补充）。
 
+## 远程 OCR / BGE
+
+默认使用本地模型，也可以通过 HTTP 调用其他机器上的 FastAPI 服务：
+
+```yaml
+embed:
+  provider: "http"
+  base_url: "http://100.64.0.10:8002"
+  endpoint: "/v1/embeddings"
+  api_key: "bge-key-xxxx"
+  model: "bge-m3"
+
+ocr:
+  provider: "http"
+  base_url: "http://100.64.0.10:8001"
+  endpoint: "/v1/ocr"
+  api_key: "ocr-key-xxxx"
+  page_base: 1
+```
+
+完整的接口约定见 [docs/remote-services.md](docs/remote-services.md)。
+
 ## License
 
 MIT

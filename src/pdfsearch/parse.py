@@ -18,6 +18,7 @@ class Block:
     section: str = ""      # 所属章节（暂空，chunk 阶段再填充）
     level: int = 0         # 标题层级，非标题为 0
     bbox: list = field(default_factory=list)
+    confidence: float = 0.0  # OCR 置信度，文本解析默认 0
 
 
 def _printed_page(text: str, page_idx: int) -> int:

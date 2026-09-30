@@ -58,26 +58,69 @@ def _page_offset(doc) -> int:
     return 1
 
 
+def iter_scan_page_images(pdf_path: str, cache_dir: str,
+                          max_pages: int = 0, dpi: int = 200):
+    """遍历无文本层页面并渲染为图片，供本地或远程 OCR 使用。"""
+    doc = fitz.open(pdf_path)
+    offset = _page_offset(doc)
+    tmp_dir = os.path.join(cache_dir, "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        for page_idx, page in enumerate(doc):
+            if max_pages and page_idx >= max_pages:
+                break
+            if len(page.get_text("text").strip()) >= 30:
+                continue  # 文本页，跳过
+            img_path = os.path.join(tmp_dir, f"scan_p{page_idx}.png")
+            page.get_pixmap(dpi=dpi).save(img_path)
+            yield page_idx, page_idx + offset, img_path
+    finally:
+        doc.close()
+
+
 def ocr_scan_pages(pdf_path: str, cache_dir: str, lang: str = "ch",
                    max_pages: int = 0, dpi: int = 200) -> list[Block]:
     """对无文本层的扫描页做 OCR，返回 Block 列表。"""
-    doc = fitz.open(pdf_path)
-    offset = _page_offset(doc)
     blocks: list[Block] = []
-    tmp_dir = os.path.join(cache_dir, "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    for page_idx, page in enumerate(doc):
-        if max_pages and page_idx >= max_pages:
-            break
-        if len(page.get_text("text").strip()) >= 30:
-            continue  # 文本页，跳过
-        img_path = os.path.join(tmp_dir, f"scan_p{page_idx}.png")
-        page.get_pixmap(dpi=dpi).save(img_path)
-        txt = _ocr_text(img_path, cache_dir, lang)
-        if txt.strip():
-            blocks.append(Block(
-                type="paragraph", text=txt, page=page_idx,
-                printed_page=page_idx + offset, section="扫描页", level=0, bbox=[],
-            ))
-    doc.close()
+    for page_idx, printed_page, img_path in iter_scan_page_images(
+        pdf_path, cache_dir, max_pages=max_pages, dpi=dpi
+    ):
+        engine = _get_engine(cache_dir, lang)
+        lines = []
+        for page in engine.predict(img_path):
+            texts = page.get("rec_texts", [])
+            scores = page.get("rec_scores", [])
+            boxes = page.get("rec_boxes", page.get("dt_polys", []))
+            for i, (text, score) in enumerate(zip(texts, scores)):
+                if float(score) < 0.4:
+                    continue
+                bbox = []
+                if i < len(boxes):
+                    raw = boxes[i]
+                    if hasattr(raw, "tolist"):
+                        raw = raw.tolist()
+                    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+                        bbox = [float(x) for x in raw]
+                    elif isinstance(raw, (list, tuple)):
+                        points = []
+                        for point in raw:
+                            if hasattr(point, "tolist"):
+                                point = point.tolist()
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                points.append((float(point[0]), float(point[1])))
+                        if points:
+                            xs = [p[0] for p in points]
+                            ys = [p[1] for p in points]
+                            bbox = [min(xs), min(ys), max(xs), max(ys)]
+                lines.append(Block(
+                    type="paragraph",
+                    text=str(text),
+                    page=page_idx,
+                    printed_page=printed_page,
+                    section="扫描页",
+                    level=0,
+                    bbox=bbox,
+                    confidence=float(score),
+                ))
+        blocks.extend(lines)
     return blocks

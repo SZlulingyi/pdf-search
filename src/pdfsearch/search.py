@@ -3,20 +3,21 @@
 import os
 import json
 import sqlite3
+from typing import Optional
 
 import jieba
 from rank_bm25 import BM25Okapi
 from qdrant_client import QdrantClient
 
-from .embed import DenseEmbedder
+from .providers import Embedder, create_embedder
 
 
 class Searcher:
-    def __init__(self, cfg):
+    def __init__(self, cfg, embedder: Optional[Embedder] = None):
         self.cfg = cfg
         self.qdrant = QdrantClient(path=cfg["qdrant_path"])
         self.sqlite = sqlite3.connect(cfg["sqlite_path"])
-        self.embedder = DenseEmbedder(cfg["model_dir"], cfg["embed"].get("device", "cpu"))
+        self.embedder = embedder or create_embedder(cfg)
         self._load_bm25()
 
     def _load_bm25(self):

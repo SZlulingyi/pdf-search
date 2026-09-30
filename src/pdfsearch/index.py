@@ -3,21 +3,23 @@
 import os
 import json
 import sqlite3
+from typing import Optional
 
 import jieba
 from rank_bm25 import BM25Okapi
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as rest
 
-from .embed import DenseEmbedder
+from .providers import Embedder, create_embedder
 
 
 class Indexer:
-    def __init__(self, cfg):
+    def __init__(self, cfg, embedder: Optional[Embedder] = None):
         self.cfg = cfg
         os.makedirs(cfg["data_dir"], exist_ok=True)
         self.qdrant = QdrantClient(path=cfg["qdrant_path"])
         self.sqlite = sqlite3.connect(cfg["sqlite_path"])
+        self.embedder = embedder or create_embedder(cfg)
         self._init_db()
 
     def _init_db(self):
@@ -30,9 +32,8 @@ class Indexer:
         self.sqlite.commit()
 
     def index(self, doc_id, doc_name, chunks):
-        embedder = DenseEmbedder(self.cfg["model_dir"], self.cfg["embed"].get("device", "cpu"))
         texts = [c["text"] for c in chunks]
-        vecs = embedder.encode(texts)
+        vecs = self.embedder.encode(texts)
 
         coll = self.cfg["collection"]
         if self.qdrant.collection_exists(coll):

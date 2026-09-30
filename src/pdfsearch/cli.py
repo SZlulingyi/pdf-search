@@ -8,6 +8,7 @@ from .config import load_config
 from .parse import parse_pdf, blocks_to_markdown
 from .chunk import chunk_blocks
 from .index import Indexer
+from .providers import create_ocr_provider
 from .search import Searcher
 
 
@@ -20,10 +21,11 @@ def _load(cfg_path):
 def cmd_index(cfg, pdf_path):
     blocks = parse_pdf(pdf_path)
     if cfg.get("ocr", {}).get("enabled"):
-        from .ocr import ocr_scan_pages
-        scan_blocks = ocr_scan_pages(
-            pdf_path, cfg["ocr"].get("cache_dir", "data/ocr_cache"),
-            cfg["ocr"].get("lang", "ch"))
+        ocr_provider = create_ocr_provider(cfg)
+        try:
+            scan_blocks = ocr_provider.recognize(pdf_path)
+        finally:
+            ocr_provider.close()
         print(f"  OCR 扫描页 {len(scan_blocks)} 个")
         blocks += scan_blocks
         blocks.sort(key=lambda b: (b.page, 0))
