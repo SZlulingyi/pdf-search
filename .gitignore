@@ -11,3 +11,7 @@ outputs/
 dist/
 build/
 config.yaml
+.next/
+node_modules/
+.env.local
+.env.*.local

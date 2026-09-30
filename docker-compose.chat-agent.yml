@@ -1,0 +1,18 @@
+services:
+  chat-agent:
+    build:
+      context: ./chat-agent
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      AGENT_MOCK: ${AGENT_MOCK:-true}
+      AGENT_MOCK_LLM: ${AGENT_MOCK_LLM:-true}
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://host.docker.internal:8000}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-http://host.docker.internal:8001/v1}
+      QWEN_API_KEY: ${QWEN_API_KEY:-EMPTY}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3.5-7b}
+      QWEN_TIMEOUT_MS: ${QWEN_TIMEOUT_MS:-120000}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-4}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

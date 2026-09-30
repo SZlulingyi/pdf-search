@@ -99,6 +99,37 @@ ocr:
 
 完整的接口约定见 [docs/remote-services.md](docs/remote-services.md)。
 
+## Chat Agent
+
+仓库内包含独立的 Chat Agent 前端与 Agent 编排应用，目录：
+
+```text
+chat-agent/
+```
+
+它不 import Python 检索代码，只通过 HTTP 调后端工具接口。默认 mock 模式可脱离 OCR、BGE、Qwen 和后端独立验证：
+
+```bash
+cd chat-agent
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+浏览器访问 `http://localhost:3000`，输入：
+
+```text
+搜索 氮化镓
+```
+
+也可以从仓库根目录使用 Docker Compose：
+
+```bash
+AGENT_MOCK=true AGENT_MOCK_LLM=true docker compose -f docker-compose.chat-agent.yml up --build
+```
+
+Agent 工具接口约定见 [chat-agent/README.md](chat-agent/README.md)。
+
 ## License
 
 MIT
