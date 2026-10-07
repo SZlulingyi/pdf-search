@@ -39,6 +39,30 @@ pdfsearch query "碳纳米管晶圆 工艺开发"
 [第19页|二、团队情况] 王慧 从事碳纳米管晶圆研发及工程化制备...
 ```
 
+## FastAPI 后端服务
+
+为 chat-agent 提供检索/文档/审核工具接口：
+
+```bash
+# 启动（默认 127.0.0.1:8000）
+pdfsearch serve
+pdfsearch serve --host 0.0.0.0 --port 8000
+
+# 或直接用 uvicorn
+python -m uvicorn pdfsearch.server:app --host 127.0.0.1 --port 8000
+```
+
+接口：
+
+```text
+GET  /health
+POST /v1/search/exact       精确关键词检索
+POST /v1/search/hybrid      混合检索（BGE + BM25 + RRF）
+GET  /v1/documents/{doc_id}/blocks/{block_id}   读取块上下文
+GET  /v1/documents/{doc_id}/pages/{page}/image  页面渲染（base64 PNG）
+POST /v1/review/word        Word 一致性审核（暂为占位）
+```
+
 ## 架构
 
 ```

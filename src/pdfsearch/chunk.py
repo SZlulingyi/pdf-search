@@ -4,39 +4,28 @@ from .parse import Block
 
 
 def chunk_blocks(blocks: list[Block], max_chars: int = 800):
-    """返回 [{text, section, start_page, end_page, kind}]。"""
+    """一个 Block 一个 chunk，保留 block_id/bbox 供检索定位。"""
     chunks = []
-    section = ""
-    buf = []
-    start_page = None
-
-    def flush():
-        nonlocal buf, start_page
-        if not buf:
-            return
-        text = "\n".join(buf).strip()
-        if text:
-            for piece in _split_long(text, max_chars):
-                chunks.append({
-                    "text": piece,
-                    "section": section,
-                    "start_page": start_page,
-                    "end_page": start_page,
-                    "kind": "md",
-                })
-        buf = []
-
     for b in blocks:
+        if b.type == "image":
+            continue  # 图片块不参与文本检索
+        text = b.text.strip()
+        if not text:
+            continue
         if b.type == "heading":
-            flush()
-            section = b.text
-            start_page = b.printed_page
-            buf.append(("#" * max(b.level, 1)) + " " + b.text)
-        else:
-            if start_page is None:
-                start_page = b.printed_page
-            buf.append(b.text)
-    flush()
+            text = ("#" * max(b.level, 1)) + " " + text
+        pieces = _split_long(text, max_chars)
+        for pi, piece in enumerate(pieces):
+            block_id = b.block_id if len(pieces) == 1 else "{}-{}".format(b.block_id, pi)
+            chunks.append({
+                "text": piece,
+                "section": b.section,
+                "start_page": b.printed_page,
+                "pdf_page": b.page,
+                "block_id": block_id,
+                "bbox": list(b.bbox),
+                "kind": b.type,
+            })
     return chunks
 
 

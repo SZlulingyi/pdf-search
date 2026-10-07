@@ -36,7 +36,7 @@ def cmd_index(cfg, pdf_path):
         f.write(md)
     chunks = chunk_blocks(blocks, cfg["chunk"]["max_chars"])
     name = os.path.basename(pdf_path)
-    n = Indexer(cfg).index(name, name, chunks)
+    n = Indexer(cfg).index(name, name, chunks, pdf_path=pdf_path)
     print(f"[解析] {name}")
     print(f"  Markdown -> {md_path}")
     print(f"  内容块 {len(blocks)} 个，chunk {n} 个")
@@ -47,18 +47,28 @@ def cmd_query(cfg, query):
         print(f"[第{r['页码']}页|{r['章节']}] {r['段落']}")
 
 
+def cmd_serve(cfg, host="127.0.0.1", port=8000):
+    import uvicorn
+    from .server import app
+    uvicorn.run(app, host=host, port=int(port))
+
+
 def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["index", "query"])
+    parser.add_argument("action", choices=["index", "query", "serve"])
     parser.add_argument("value", nargs="?", default=None)
     parser.add_argument("--config", default=os.path.join(here, "..", "config.yaml"))
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     cfg = _load(args.config)
     if args.action == "index":
         cmd_index(cfg, args.value)
-    else:
+    elif args.action == "query":
         cmd_query(cfg, args.value)
+    else:
+        cmd_serve(cfg, args.host, args.port)
 
 
 if __name__ == "__main__":

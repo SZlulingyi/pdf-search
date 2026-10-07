@@ -19,6 +19,7 @@ class Block:
     level: int = 0         # 标题层级，非标题为 0
     bbox: list = field(default_factory=list)
     confidence: float = 0.0  # OCR 置信度，文本解析默认 0
+    block_id: str = ""     # 唯一块 ID，供检索/审核定位
 
 
 def _printed_page(text: str, page_idx: int) -> int:
@@ -56,6 +57,8 @@ def parse_pdf(pdf_path: str, max_pages: int = 0) -> list[Block]:
     """把整份 PDF 解析为内容块列表。"""
     doc = fitz.open(pdf_path)
     blocks: list[Block] = []
+    seq = 0
+    current_section = ""
     for page_idx, page in enumerate(doc):
         if max_pages and page_idx >= max_pages:
             break
@@ -84,13 +87,22 @@ def parse_pdf(pdf_path: str, max_pages: int = 0) -> list[Block]:
                 continue
             max_size = max((s["size"] for l in b["lines"] for s in l["spans"]), default=body)
             lvl = _heading_level(max_size, body)
+            seq += 1
+            block_id = "b{:06d}".format(seq)
+            if lvl:
+                section = current_section
+                current_section = btext
+            else:
+                section = current_section
             blocks.append(Block(
                 type="heading" if lvl else "paragraph",
                 text=btext,
                 page=page_idx,
                 printed_page=printed,
+                section=section,
                 level=lvl,
                 bbox=list(b["bbox"]),
+                block_id=block_id,
             ))
 
         # 表格
@@ -98,16 +110,20 @@ def parse_pdf(pdf_path: str, max_pages: int = 0) -> list[Block]:
             rows = [[(c or "").replace("\n", "").strip() for c in row] for row in t.extract()]
             md = _table_to_markdown(rows)
             if md:
+                seq += 1
                 blocks.append(Block(
                     type="table", text=md, page=page_idx,
-                    printed_page=printed, bbox=list(t.bbox),
+                    printed_page=printed, section=current_section,
+                    bbox=list(t.bbox), block_id="b{:06d}".format(seq),
                 ))
 
         # 图片
         for img in page.get_images(full=True):
+            seq += 1
             blocks.append(Block(
                 type="image", text=f"![图片 p{printed}](images/p{printed}_{img[0]}.png)",
-                page=page_idx, printed_page=printed, bbox=[],
+                page=page_idx, printed_page=printed, section=current_section,
+                bbox=[], block_id="b{:06d}".format(seq),
             ))
     doc.close()
     print(f"  已解析 {len(blocks)} 个内容块")

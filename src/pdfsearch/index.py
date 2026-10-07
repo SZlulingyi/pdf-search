@@ -25,13 +25,13 @@ class Indexer:
     def _init_db(self):
         cur = self.sqlite.cursor()
         cur.execute("""CREATE TABLE IF NOT EXISTS docs(
-            doc_id TEXT PRIMARY KEY, name TEXT, chunks_json TEXT)""")
+            doc_id TEXT PRIMARY KEY, name TEXT, pdf_path TEXT, chunks_json TEXT)""")
         cur.execute("""CREATE TABLE IF NOT EXISTS chunks(
-            chunk_id INTEGER PRIMARY KEY, doc_id TEXT, section TEXT,
-            start_page INTEGER, text TEXT)""")
+            chunk_id INTEGER PRIMARY KEY, doc_id TEXT, doc_name TEXT,
+            block_id TEXT, section TEXT, page INTEGER, pdf_page INTEGER, bbox TEXT, text TEXT)""")
         self.sqlite.commit()
 
-    def index(self, doc_id, doc_name, chunks):
+    def index(self, doc_id, doc_name, chunks, pdf_path=None):
         texts = [c["text"] for c in chunks]
         vecs = self.embedder.encode(texts)
 
@@ -47,18 +47,24 @@ class Indexer:
                 id=i, vector=vecs[i].tolist(),
                 payload={"section": chunks[i]["section"],
                          "start_page": chunks[i]["start_page"],
-                         "doc_id": doc_id, "text": chunks[i]["text"]},
+                         "block_id": chunks[i].get("block_id", ""),
+                         "bbox": chunks[i].get("bbox", []),
+                         "doc_id": doc_id, "doc_name": doc_name,
+                         "text": chunks[i]["text"]},
             )
             for i in range(len(chunks))
         ]
         self.qdrant.upsert(collection_name=coll, points=points)
 
         cur = self.sqlite.cursor()
-        cur.execute("INSERT OR REPLACE INTO docs(doc_id, name, chunks_json) VALUES(?,?,?)",
-                    (doc_id, doc_name, json.dumps(chunks, ensure_ascii=False)))
+        cur.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+        cur.execute("INSERT OR REPLACE INTO docs(doc_id, name, pdf_path, chunks_json) VALUES(?,?,?,?)",
+                    (doc_id, doc_name, pdf_path, json.dumps(chunks, ensure_ascii=False)))
         for i, c in enumerate(chunks):
-            cur.execute("INSERT OR REPLACE INTO chunks(chunk_id, doc_id, section, start_page, text) VALUES(?,?,?,?,?)",
-                        (i, doc_id, c["section"], c["start_page"], c["text"]))
+            cur.execute("""INSERT OR REPLACE INTO chunks(
+                chunk_id, doc_id, doc_name, block_id, section, page, pdf_page, bbox, text) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (i, doc_id, doc_name, c.get("block_id", ""), c["section"],
+                 c["start_page"], c.get("pdf_page", 0), json.dumps(c.get("bbox", [])), c["text"]))
         self.sqlite.commit()
 
         # BM25 落地

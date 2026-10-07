@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 data/
+data_test/
 images/
 outputs/
 .pytest_cache/
