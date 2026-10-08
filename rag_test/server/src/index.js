@@ -91,6 +91,16 @@ function toFrontendChunk(result, datasetId = VIRTUAL_DATASET_ID) {
   };
 }
 
+
+function extractSearchTerm(question) {
+  const value = String(question || '').trim();
+  const stripped = value
+    .replace(/^(请|麻烦|帮我|帮忙)?\s*(搜索|查找|检索|查询|查一下|找一下|搜一下)\s*[：:]?\s*/u, '')
+    .replace(/[？?。！!]+$/u, '')
+    .trim();
+  return stripped || value;
+}
+
 function uniqueResults(exact = [], similar = []) {
   const out = [];
   const seen = new Set();
@@ -234,8 +244,9 @@ app.post('/api/chat', requireSession, async (req, res) => {
   const { question } = req.body || {};
   const cleanQuestion = String(question || '').trim();
   if (!cleanQuestion) return res.status(400).json({ code: 400, message: 'question is required' });
+  const exactTerm = extractSearchTerm(cleanQuestion);
   const [exactResult, hybridResult] = await Promise.allSettled([
-    pdfsearch.exact(cleanQuestion, 8),
+    pdfsearch.exact(exactTerm, 8),
     pdfsearch.hybrid(cleanQuestion, 8),
   ]);
   const exact = exactResult.status === 'fulfilled' ? exactResult.value?.results || [] : [];
