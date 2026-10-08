@@ -80,7 +80,8 @@ def render_document_page(doc_id: str, page: int):
     try:
         if pdf_page < 0 or pdf_page >= len(doc):
             raise HTTPException(status_code=404, detail="page not found")
-        pix = doc[pdf_page].get_pixmap(dpi=150)
+        rendered = doc[pdf_page]
+        pix = rendered.get_pixmap(dpi=150)
         data = base64.b64encode(pix.tobytes("png")).decode()
         return {
             "doc_id": doc_id,
@@ -88,6 +89,8 @@ def render_document_page(doc_id: str, page: int):
             "image": "data:image/png;base64," + data,
             "width": pix.width,
             "height": pix.height,
+            "page_width": rendered.rect.width,
+            "page_height": rendered.rect.height,
         }
     finally:
         doc.close()

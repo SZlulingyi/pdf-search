@@ -73,6 +73,9 @@ type Chunk = {
   similarity: number;
   term_similarity: number;
   vector_similarity: number;
+  page?: number;
+  positions?: number[];
+  bbox?: number[] | null;
 };
 
 type ChatMessage = {
@@ -166,6 +169,7 @@ function App() {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [previewChunk, setPreviewChunk] = useState<Chunk | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -671,7 +675,7 @@ function App() {
           ) : (
             <div className="message-list">
               {activeSession.messages.map((message) => (
-                <MessageBubble key={message.id} message={message} />
+                <MessageBubble key={message.id} message={message} onSelectChunk={setPreviewChunk} />
               ))}
               <div ref={messagesEndRef} />
             </div>
@@ -744,6 +748,8 @@ function App() {
           onClose={() => setSystemOpen(false)}
         />
       )}
+
+      {previewChunk && <PdfEvidenceModal chunk={previewChunk} onClose={() => setPreviewChunk(null)} />}
     </div>
   );
 }
@@ -787,7 +793,7 @@ function LoginScreen({
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, onSelectChunk }: { message: ChatMessage; onSelectChunk: (chunk: Chunk) => void }) {
   const sources = [...(message.exact || []), ...(message.similar || [])];
   if (message.role === 'user') {
     return <div className="message-row user"><div className="message-bubble">{message.content}</div></div>;
@@ -808,8 +814,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <details className="source-panel">
             <summary><Search size={14} />查看检索依据 <span>{sources.length}</span></summary>
             <div className="source-groups">
-              <SourceGroup title="精确命中" chunks={message.exact || []} tone="exact" />
-              <SourceGroup title="相似结果" chunks={message.similar || []} tone="similar" />
+              <SourceGroup title="精确命中" chunks={message.exact || []} tone="exact" onSelectChunk={onSelectChunk} />
+              <SourceGroup title="相似结果" chunks={message.similar || []} tone="similar" onSelectChunk={onSelectChunk} />
             </div>
           </details>
         )}
@@ -818,17 +824,116 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function SourceGroup({ title, chunks, tone }: { title: string; chunks: Chunk[]; tone: 'exact' | 'similar' }) {
+function SourceGroup({
+  title,
+  chunks,
+  tone,
+  onSelectChunk,
+}: {
+  title: string;
+  chunks: Chunk[];
+  tone: 'exact' | 'similar';
+  onSelectChunk: (chunk: Chunk) => void;
+}) {
   if (!chunks.length) return null;
   return (
     <div className={`source-group ${tone}`}>
       <h4>{title}</h4>
       {chunks.slice(0, 3).map((chunk, index) => (
-        <div className="source-item" key={`${chunk.id}-${index}`}>
-          <div><FileText size={13} /><span>{chunk.document_keyword || 'PDF 文档'}</span><strong>{Math.round((chunk.similarity || 0) * 100)}%</strong></div>
+        <button
+          type="button"
+          className="source-item source-item-button"
+          key={`${chunk.id}-${index}`}
+          onClick={() => onSelectChunk(chunk)}
+        >
+          <div>
+            <FileText size={13} />
+            <span>{chunk.document_keyword || 'PDF 文档'}</span>
+            {chunk.page ? <em>第 {chunk.page} 页</em> : null}
+            <strong>{Math.round((chunk.similarity || 0) * 100)}%</strong>
+          </div>
           <p>{stripHtml(chunk.highlight || chunk.content).slice(0, 260)}</p>
-        </div>
+        </button>
       ))}
+    </div>
+  );
+}
+
+function PdfEvidenceModal({ chunk, onClose }: { chunk: Chunk; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [pageImage, setPageImage] = useState<{
+    image: string;
+    width: number;
+    height: number;
+    page_width?: number;
+    page_height?: number;
+    page?: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!chunk.document_id || !chunk.page) {
+      setError('该引用没有可用的文档或页码');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    fetch(`/api/pdfsearch/documents/${encodeURIComponent(chunk.document_id)}/pages/${encodeURIComponent(String(chunk.page))}/image`)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || payload?.code !== 0) {
+          throw new Error(payload?.message || `页面加载失败: HTTP ${response.status}`);
+        }
+        setPageImage(payload.data);
+      })
+      .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)))
+      .finally(() => setLoading(false));
+  }, [chunk]);
+
+  const pageWidth = pageImage?.page_width || pageImage?.width || 1;
+  const pageHeight = pageImage?.page_height || pageImage?.height || 1;
+  const bbox = chunk.bbox && chunk.bbox.length === 4 ? chunk.bbox : null;
+  const boxStyle = bbox ? {
+    left: `${(bbox[0] / pageWidth) * 100}%`,
+    top: `${(bbox[1] / pageHeight) * 100}%`,
+    width: `${((bbox[2] - bbox[0]) / pageWidth) * 100}%`,
+    height: `${((bbox[3] - bbox[1]) / pageHeight) * 100}%`,
+  } : undefined;
+
+  return (
+    <div className="evidence-modal-backdrop" onClick={onClose}>
+      <section className="evidence-modal" onClick={(event) => event.stopPropagation()}>
+        <header className="evidence-modal-header">
+          <div>
+            <span>检索依据</span>
+            <h2>{chunk.document_keyword || 'PDF 文档'}</h2>
+            <p>{chunk.page ? `第 ${chunk.page} 页` : '未知页码'} · {chunk.id}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+        </header>
+        <div className="evidence-modal-body">
+          <div className="evidence-page-preview">
+            {loading && <div className="evidence-state"><LoaderCircle size={20} className="spin" />正在加载页面...</div>}
+            {error && <div className="evidence-state error">{error}</div>}
+            {pageImage && !error && (
+              <div className="evidence-page-wrap">
+                <img src={pageImage.image} alt={`${chunk.document_keyword || 'PDF'} 第 ${chunk.page} 页`} />
+                {boxStyle && <span className="evidence-bbox" style={boxStyle} />}
+              </div>
+            )}
+          </div>
+          <aside className="evidence-copy">
+            <h3>命中段落</h3>
+            <p>{stripHtml(chunk.highlight || chunk.content)}</p>
+            <dl>
+              <div><dt>block_id</dt><dd>{chunk.id || '-'}</dd></div>
+              <div><dt>bbox</dt><dd>{chunk.bbox?.join(', ') || '-'}</dd></div>
+              <div><dt>相似度</dt><dd>{Math.round((chunk.similarity || 0) * 100)}%</dd></div>
+            </dl>
+          </aside>
+        </div>
+      </section>
     </div>
   );
 }

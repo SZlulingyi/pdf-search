@@ -45,5 +45,13 @@ export function createPdfSearchProvider({ baseUrl, apiKey = '' }) {
     return request('/health');
   }
 
-  return { exact, hybrid, health };
+  async function pageImage(docId, page) {
+    return request(`/v1/documents/${encodeURIComponent(docId)}/pages/${encodeURIComponent(String(page))}/image`);
+  }
+
+  async function block(docId, blockId) {
+    return request(`/v1/documents/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}`);
+  }
+
+  return { exact, hybrid, health, pageImage, block };
 }

@@ -86,6 +86,7 @@ function toFrontendChunk(result, datasetId = VIRTUAL_DATASET_ID) {
     similarity: score,
     term_similarity: score,
     vector_similarity: score,
+    page: Number(result.page || 0),
     positions: result.page ? [result.page] : [],
     bbox: result.bbox || null,
   };
@@ -238,6 +239,24 @@ app.post('/api/ragflow/datasets/:datasetId/chunks', requireSession, (_req, res) 
     code: 501,
     message: 'pdf-search 当前不提供远程分块接口，请先通过 pdf-search CLI 或索引流程完成 PDF 入库。',
   });
+});
+
+app.get('/api/pdfsearch/documents/:docId/pages/:page/image', requireSession, async (req, res) => {
+  try {
+    const payload = await pdfsearch.pageImage(req.params.docId, req.params.page);
+    return res.json({ code: 0, data: payload });
+  } catch (error) {
+    return res.status(error?.status || 502).json({ code: error?.status || 502, message: String(error?.message || error) });
+  }
+});
+
+app.get('/api/pdfsearch/documents/:docId/blocks/:blockId', requireSession, async (req, res) => {
+  try {
+    const payload = await pdfsearch.block(req.params.docId, req.params.blockId);
+    return res.json({ code: 0, data: payload });
+  } catch (error) {
+    return res.status(error?.status || 502).json({ code: error?.status || 502, message: String(error?.message || error) });
+  }
 });
 
 app.post('/api/chat', requireSession, async (req, res) => {
