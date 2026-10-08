@@ -1446,3 +1446,36 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .document-actions .icon-button.danger {
   color: #a14343;
 }
+
+.user-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.user-row-actions select {
+  height: 27px;
+  padding: 0 6px;
+  border: 1px solid #dfe6e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #304238;
+  font-size: 9px;
+}
+
+.user-row-actions .icon-button {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+}
+
+@media (max-width: 520px) {
+  .user-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .user-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}

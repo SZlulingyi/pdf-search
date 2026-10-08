@@ -18,6 +18,7 @@ import {
   getAuthSession,
   listUsers,
   touchLastLogin,
+  updateUser,
   verifyPassword,
 } from './auth-store.js';
 import {
@@ -255,6 +256,24 @@ app.post('/api/users', requireAdmin, express.json({ limit: '16kb' }), async (req
   } catch (error) {
     const message = String(error?.message || error);
     return res.status(message.includes('duplicate') ? 409 : 500).json({ code: 409, message });
+  }
+});
+
+app.patch('/api/users/:userId', requireAdmin, express.json({ limit: '16kb' }), async (req, res) => {
+  try {
+    const targetId = req.params.userId;
+    const patch = req.body || {};
+    if (targetId === req.zhisuoUser && (patch.role === 'member' || patch.status === 'disabled')) {
+      return res.status(400).json({ code: 400, message: '不能禁用或降级当前登录用户' });
+    }
+    const user = await updateUser(targetId, patch);
+    if (!user) return res.status(404).json({ code: 404, message: '用户不存在' });
+    return res.json({
+      code: 0,
+      data: { id: user.id, username: user.username, role: user.role, status: user.status },
+    });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
   }
 });
 

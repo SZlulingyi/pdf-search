@@ -456,6 +456,25 @@ function App() {
     }
   };
 
+  const updateUserAccount = async (userId: string, patch: Record<string, unknown>) => {
+    setUserLoading(true);
+    setUserError('');
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '用户更新失败');
+      await refreshUsers();
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUserLoading(false);
+    }
+  };
+
   const deleteUserAccount = async (userId: string) => {
     setUserLoading(true);
     setUserError('');
@@ -943,6 +962,7 @@ function App() {
           onRoleChange={setNewRole}
           onCreateUser={() => void createUserAccount()}
           onDeleteUser={(userId) => void deleteUserAccount(userId)}
+          onUpdateUser={(userId, patch) => void updateUserAccount(userId, patch)}
           onRefresh={() => void refreshHealth()}
           onLogout={() => void logout()}
           onClose={() => setSystemOpen(false)}
@@ -1247,6 +1267,7 @@ function SystemDrawer({
   onRoleChange,
   onCreateUser,
   onDeleteUser,
+  onUpdateUser,
   onRefresh,
   onLogout,
   onClose,
@@ -1265,6 +1286,7 @@ function SystemDrawer({
   onRoleChange: (value: 'admin' | 'member') => void;
   onCreateUser: () => void;
   onDeleteUser: (userId: string) => void;
+  onUpdateUser: (userId: string, patch: Record<string, unknown>) => void;
   onRefresh: () => void;
   onLogout: () => void;
   onClose: () => void;
@@ -1308,10 +1330,40 @@ function SystemDrawer({
               {users.map((user) => (
                 <div className="user-row" key={user.id}>
                   <span className="user-avatar"><UserRound size={15} /></span>
-                  <div><strong>{user.username}</strong><small>{user.role === 'admin' ? '管理员' : '成员'} · {user.status}</small></div>
-                  <button className="icon-button danger" onClick={() => onDeleteUser(user.id)} disabled={userLoading || user.username === username} title="删除用户">
-                    <Trash2 size={15} />
-                  </button>
+                  <div><strong>{user.username}</strong><small>{user.status === 'active' ? '已启用' : '已禁用'}</small></div>
+                  <div className="user-row-actions">
+                    <select
+                      value={user.role}
+                      onChange={(event) => onUpdateUser(user.id, { role: event.target.value })}
+                      disabled={userLoading || user.username === username}
+                      title="修改角色"
+                    >
+                      <option value="member">成员</option>
+                      <option value="admin">管理员</option>
+                    </select>
+                    <button
+                      className="icon-button"
+                      disabled={userLoading || user.username === username}
+                      onClick={() => onUpdateUser(user.id, { status: user.status === 'active' ? 'disabled' : 'active' })}
+                      title={user.status === 'active' ? '禁用用户' : '启用用户'}
+                    >
+                      <ShieldCheck size={15} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      disabled={userLoading}
+                      onClick={() => {
+                        const password = window.prompt(`为 ${user.username} 设置新密码`);
+                        if (password) onUpdateUser(user.id, { password });
+                      }}
+                      title="重置密码"
+                    >
+                      <LockKeyhole size={15} />
+                    </button>
+                    <button className="icon-button danger" onClick={() => onDeleteUser(user.id)} disabled={userLoading || user.username === username} title="删除用户">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
                 </div>
               ))}
               {!users.length && <div className="drawer-empty"><UserRound size={24} /><strong>暂无其他用户</strong><span>可以创建成员账号。</span></div>}

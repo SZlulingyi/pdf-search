@@ -61,6 +61,30 @@ export async function createUser(username, password, role = 'member') {
   return userFromRow(rows[0]);
 }
 
+export async function updateUser(userId, patch) {
+  const fields = [];
+  const values = [];
+  if (patch.role !== undefined) {
+    values.push(patch.role === 'admin' ? 'admin' : 'member');
+    fields.push(`role = $${values.length}`);
+  }
+  if (patch.status !== undefined) {
+    values.push(patch.status === 'active' ? 'active' : 'disabled');
+    fields.push(`status = $${values.length}`);
+  }
+  if (patch.password) {
+    values.push(hashPassword(patch.password));
+    fields.push(`password_hash = $${values.length}`);
+  }
+  if (!fields.length) return null;
+  values.push(userId);
+  const { rows } = await pool.query(
+    `UPDATE users SET ${fields.join(', ')} WHERE id = $${values.length} RETURNING *`,
+    values,
+  );
+  return rows[0] ? userFromRow(rows[0]) : null;
+}
+
 export async function listUsers() {
   const { rows } = await pool.query(
     'SELECT * FROM users ORDER BY created_at ASC',
