@@ -44,6 +44,15 @@ type HealthPayload = {
   checks: ServiceHealth[];
 };
 
+type UserAccount = {
+  id: string;
+  username: string;
+  role: 'admin' | 'member';
+  status: string;
+  createdAt?: string;
+  lastLoginAt?: string | null;
+};
+
 type Dataset = {
   id: string;
   name: string;
@@ -156,6 +165,13 @@ const runMeta: Record<string, { label: string; tone: string }> = {
 function App() {
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [consoleUser, setConsoleUser] = useState('');
+  const [consoleRole, setConsoleRole] = useState<'admin' | 'member'>('member');
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [userLoading, setUserLoading] = useState(false);
+  const [userError, setUserError] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<'admin' | 'member'>('member');
   const [loginUsername, setLoginUsername] = useState('admin');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
@@ -225,6 +241,7 @@ function App() {
       const payload = await response.json().catch(() => null);
       if (response.ok && payload?.authenticated) {
         setConsoleUser(payload.data?.username || 'admin');
+        setConsoleRole(payload.data?.role === 'admin' ? 'admin' : 'member');
         setAuthState('authenticated');
       } else {
         setAuthState('anonymous');
@@ -367,6 +384,7 @@ function App() {
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '登录失败');
       setConsoleUser(payload.data?.username || loginUsername);
+      setConsoleRole(payload.data?.role === 'admin' ? 'admin' : 'member');
       setLoginPassword('');
       setAuthState('authenticated');
     } catch (error) {
@@ -386,6 +404,70 @@ function App() {
     setSelectedDatasetId('');
     setSessions([]);
     setActiveSessionId('');
+    setConsoleRole('member');
+    setUsers([]);
+    setUserError('');
+  };
+
+  const refreshUsers = useCallback(async () => {
+    if (consoleRole !== 'admin') {
+      setUsers([]);
+      return;
+    }
+    setUserLoading(true);
+    setUserError('');
+    try {
+      const response = await fetch('/api/users');
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '用户列表加载失败');
+      setUsers(payload.data || []);
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUserLoading(false);
+    }
+  }, [consoleRole]);
+
+  useEffect(() => {
+    if (authState === 'authenticated' && consoleRole === 'admin') void refreshUsers();
+  }, [authState, consoleRole, refreshUsers]);
+
+  const createUserAccount = async () => {
+    if (!newUsername.trim() || !newPassword) return;
+    setUserLoading(true);
+    setUserError('');
+    try {
+      const response = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '创建用户失败');
+      setNewUsername('');
+      setNewPassword('');
+      setNewRole('member');
+      await refreshUsers();
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUserLoading(false);
+    }
+  };
+
+  const deleteUserAccount = async (userId: string) => {
+    setUserLoading(true);
+    setUserError('');
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '删除用户失败');
+      await refreshUsers();
+    } catch (error) {
+      setUserError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUserLoading(false);
+    }
   };
 
   const updateSession = (sessionId: string, updater: (session: ChatSession) => ChatSession) => {
@@ -810,6 +892,18 @@ function App() {
         <SystemDrawer
           health={health}
           username={consoleUser}
+          role={consoleRole}
+          users={users}
+          userLoading={userLoading}
+          userError={userError}
+          newUsername={newUsername}
+          newPassword={newPassword}
+          newRole={newRole}
+          onUsernameChange={setNewUsername}
+          onPasswordChange={setNewPassword}
+          onRoleChange={setNewRole}
+          onCreateUser={() => void createUserAccount()}
+          onDeleteUser={(userId) => void deleteUserAccount(userId)}
           onRefresh={() => void refreshHealth()}
           onLogout={() => void logout()}
           onClose={() => setSystemOpen(false)}
@@ -1091,12 +1185,36 @@ function KnowledgeDrawer({
 function SystemDrawer({
   health,
   username,
+  role,
+  users,
+  userLoading,
+  userError,
+  newUsername,
+  newPassword,
+  newRole,
+  onUsernameChange,
+  onPasswordChange,
+  onRoleChange,
+  onCreateUser,
+  onDeleteUser,
   onRefresh,
   onLogout,
   onClose,
 }: {
   health: HealthPayload | null;
   username: string;
+  role: 'admin' | 'member';
+  users: UserAccount[];
+  userLoading: boolean;
+  userError: string;
+  newUsername: string;
+  newPassword: string;
+  newRole: 'admin' | 'member';
+  onUsernameChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onRoleChange: (value: 'admin' | 'member') => void;
+  onCreateUser: () => void;
+  onDeleteUser: (userId: string) => void;
   onRefresh: () => void;
   onLogout: () => void;
   onClose: () => void;
@@ -1105,7 +1223,7 @@ function SystemDrawer({
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer" onClick={(event) => event.stopPropagation()}>
         <div className="drawer-header">
-          <div><span className="eyebrow">系统设置</span><h2>服务状态</h2><p className="drawer-user">当前账号：{username}</p></div>
+          <div><span className="eyebrow">系统设置</span><h2>服务状态</h2><p className="drawer-user">当前账号：{username} · {role === 'admin' ? '管理员' : '成员'}</p></div>
           <button className="icon-button" onClick={onClose} aria-label="关闭系统设置"><X size={19} /></button>
         </div>
         <div className="service-list">
@@ -1117,6 +1235,40 @@ function SystemDrawer({
           ))}
           {!health?.checks?.length && <div className="drawer-empty"><Server size={24} /><strong>正在读取服务状态</strong></div>}
         </div>
+
+        {role === 'admin' && (
+          <section className="user-admin">
+            <div className="user-admin-heading">
+              <div><span className="eyebrow">管理员</span><h3>用户管理</h3></div>
+              <span>{users.length} 个账号</span>
+            </div>
+            <div className="user-create-form">
+              <input value={newUsername} onChange={(event) => onUsernameChange(event.target.value)} placeholder="用户名" />
+              <input value={newPassword} onChange={(event) => onPasswordChange(event.target.value)} placeholder="初始密码" type="password" />
+              <select value={newRole} onChange={(event) => onRoleChange(event.target.value as 'admin' | 'member')}>
+                <option value="member">成员</option>
+                <option value="admin">管理员</option>
+              </select>
+              <button className="button primary compact" onClick={onCreateUser} disabled={userLoading || !newUsername.trim() || !newPassword}>
+                <UserRound size={15} />创建
+              </button>
+            </div>
+            {userError && <div className="user-admin-error"><XCircle size={14} />{userError}</div>}
+            <div className="user-list">
+              {users.map((user) => (
+                <div className="user-row" key={user.id}>
+                  <span className="user-avatar"><UserRound size={15} /></span>
+                  <div><strong>{user.username}</strong><small>{user.role === 'admin' ? '管理员' : '成员'} · {user.status}</small></div>
+                  <button className="icon-button danger" onClick={() => onDeleteUser(user.id)} disabled={userLoading || user.username === username} title="删除用户">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+              {!users.length && <div className="drawer-empty"><UserRound size={24} /><strong>暂无其他用户</strong><span>可以创建成员账号。</span></div>}
+            </div>
+          </section>
+        )}
+
         <div className="drawer-actions">
           <button className="button secondary" onClick={onRefresh}><RefreshCw size={16} />重新检查</button>
           <button className="button ghost" onClick={onLogout}><LogOut size={16} />退出登录</button>

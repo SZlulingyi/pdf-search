@@ -1315,3 +1315,118 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .evidence-modal-body { grid-template-columns: 1fr; }
   .evidence-copy { border-left: 0; border-top: 1px solid #dfe8e1; }
 }
+
+.user-admin {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #e5e9e6;
+}
+
+.user-admin-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.user-admin-heading h3 {
+  margin: 4px 0 0;
+  font-size: 14px;
+}
+
+.user-admin-heading > span {
+  color: #8b968f;
+  font-size: 9px;
+}
+
+.user-create-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 82px auto;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.user-create-form input,
+.user-create-form select {
+  min-width: 0;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid #dfe6e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #24352b;
+  font-size: 10px;
+  outline: none;
+}
+
+.user-create-form input:focus,
+.user-create-form select:focus {
+  border-color: #6aa383;
+  box-shadow: 0 0 0 3px rgba(65, 133, 95, 0.1);
+}
+
+.user-admin-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 9px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: #fff1f1;
+  color: #a14343;
+  font-size: 9px;
+}
+
+.user-list {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.user-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid #e2e8e4;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: #e8f3ec;
+  color: #2f7651;
+}
+
+.user-row strong,
+.user-row small {
+  display: block;
+}
+
+.user-row strong {
+  font-size: 10px;
+}
+
+.user-row small {
+  margin-top: 3px;
+  color: #87948b;
+  font-size: 8px;
+}
+
+.icon-button.danger {
+  color: #a14343;
+}
+
+@media (max-width: 720px) {
+  .user-create-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
