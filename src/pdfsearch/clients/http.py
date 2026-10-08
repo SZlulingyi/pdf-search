@@ -22,6 +22,7 @@ class BaseHTTPClient:
         retries: int = 2,
         transport: Optional[httpx.BaseTransport] = None,
         extra_headers: Optional[Dict[str, str]] = None,
+        trust_env: bool = False,
     ) -> None:
         if not base_url:
             raise ValueError("base_url 不能为空")
@@ -36,6 +37,7 @@ class BaseHTTPClient:
             timeout=timeout,
             headers=headers,
             transport=transport,
+            trust_env=trust_env,
         )
 
     def close(self) -> None:
