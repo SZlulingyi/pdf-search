@@ -41,6 +41,30 @@ POST /v1/search/hybrid
 
 注意：pdf-search 当前 FastAPI 没有上传/索引入口。请先通过 `pdfsearch index <pdf>` 完成入库，再在前端提问。
 
+## 会话存储
+
+Web 版使用 PostgreSQL 保存：
+
+```text
+conversations
+messages
+message_citations
+```
+
+启动数据库：
+
+```bash
+docker compose -f docker-compose.postgres.yml up -d
+```
+
+配置：
+
+```env
+DATABASE_URL=postgres://zhisuo:zhisuo@127.0.0.1:5432/zhisuo
+```
+
+前端不再使用 localStorage 作为正式会话存储。会话、消息、页码、block_id、bbox 和引用都会写入 PostgreSQL。
+
 ## 架构
 
 ```text

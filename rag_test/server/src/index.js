@@ -1,10 +1,21 @@
 import express from 'express';
 import path from 'node:path';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { createPdfSearchProvider } from './pdfsearch-provider.js';
 import { createLlmProvider } from './llm-provider.js';
+import { initDb, checkDb } from './db.js';
+import {
+  addCitations,
+  addMessage,
+  createConversation,
+  deleteConversation,
+  getConversation,
+  listConversationsWithMessages,
+  loadConversationMessages,
+  updateConversation,
+} from './conversation-store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +39,13 @@ const llm = createLlmProvider({
   apiKey: process.env.LLM_API_KEY || '',
   model: process.env.LLM_MODEL || '',
 });
+
+try {
+  await initDb();
+} catch (error) {
+  console.error('[zhisuo] PostgreSQL initialization failed:', error);
+  process.exit(1);
+}
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
@@ -166,7 +184,7 @@ app.post('/api/auth/logout', (req, res) => {
 app.get('/api/health', async (_req, res) => {
   const started = Date.now();
   try {
-    await pdfsearch.health();
+    await Promise.all([pdfsearch.health(), checkDb()]);
     return res.json({
       ok: true,
       apiKeyConfigured: true,
@@ -259,37 +277,142 @@ app.get('/api/pdfsearch/documents/:docId/blocks/:blockId', requireSession, async
   }
 });
 
+app.get('/api/conversations', requireSession, async (req, res) => {
+  try {
+    const conversations = await listConversationsWithMessages(req.zhisuoUser);
+    return res.json({ code: 0, data: conversations });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
+app.post('/api/conversations', requireSession, async (req, res) => {
+  try {
+    const conversation = await createConversation(
+      req.zhisuoUser,
+      req.body?.title || '新会话',
+    );
+    return res.json({ code: 0, data: { ...conversation, messages: [] } });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
+app.get('/api/conversations/:conversationId', requireSession, async (req, res) => {
+  try {
+    const conversation = await getConversation(req.zhisuoUser, req.params.conversationId);
+    if (!conversation) return res.status(404).json({ code: 404, message: 'conversation not found' });
+    const messages = await loadConversationMessages(req.zhisuoUser, conversation.id);
+    return res.json({ code: 0, data: { ...conversation, messages } });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
+app.patch('/api/conversations/:conversationId', requireSession, async (req, res) => {
+  try {
+    const conversation = await updateConversation(
+      req.zhisuoUser,
+      req.params.conversationId,
+      req.body || {},
+    );
+    if (!conversation) return res.status(404).json({ code: 404, message: 'conversation not found' });
+    return res.json({ code: 0, data: conversation });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
+app.delete('/api/conversations/:conversationId', requireSession, async (req, res) => {
+  try {
+    const deleted = await deleteConversation(req.zhisuoUser, req.params.conversationId);
+    if (!deleted) return res.status(404).json({ code: 404, message: 'conversation not found' });
+    return res.json({ code: 0 });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
 app.post('/api/chat', requireSession, async (req, res) => {
-  const { question } = req.body || {};
+  const { question, conversationId } = req.body || {};
   const cleanQuestion = String(question || '').trim();
   if (!cleanQuestion) return res.status(400).json({ code: 400, message: 'question is required' });
-  const exactTerm = extractSearchTerm(cleanQuestion);
-  const [exactResult, hybridResult] = await Promise.allSettled([
-    pdfsearch.exact(exactTerm, 8),
-    pdfsearch.hybrid(cleanQuestion, 8),
-  ]);
-  const exact = exactResult.status === 'fulfilled' ? exactResult.value?.results || [] : [];
-  const similar = hybridResult.status === 'fulfilled' ? hybridResult.value?.results || [] : [];
-  if (!exact.length && !similar.length) {
-    const message = exactResult.status === 'rejected'
-      ? exactResult.reason?.message
-      : hybridResult.status === 'rejected'
-        ? hybridResult.reason?.message
-        : '没有检索到相关内容';
-    return res.status(502).json({ code: 502, message: message || '没有检索到相关内容' });
-  }
+
+  let conversation = null;
   try {
-    const answer = await generateAnswer(cleanQuestion, exact, similar);
+    conversation = conversationId
+      ? await getConversation(req.zhisuoUser, conversationId)
+      : null;
+    if (!conversation) {
+      conversation = await createConversation(
+        req.zhisuoUser,
+        cleanQuestion.slice(0, 40),
+        conversationId || randomUUID(),
+      );
+    }
+
+    const userMessage = await addMessage(req.zhisuoUser, conversation.id, {
+      role: 'user',
+      content: cleanQuestion,
+      status: 'complete',
+    });
+
+    const exactTerm = extractSearchTerm(cleanQuestion);
+    const startedAt = Date.now();
+    const [exactResult, hybridResult] = await Promise.allSettled([
+      pdfsearch.exact(exactTerm, 8),
+      pdfsearch.hybrid(cleanQuestion, 8),
+    ]);
+    const exactRaw = exactResult.status === 'fulfilled' ? exactResult.value?.results || [] : [];
+    const similarRaw = hybridResult.status === 'fulfilled' ? hybridResult.value?.results || [] : [];
+    const exact = exactRaw.map((item) => toFrontendChunk(item));
+    const similar = similarRaw.map((item) => toFrontendChunk(item));
+
+    let answer;
+    let assistantStatus = 'complete';
+    let errorMessage = null;
+    if (!exact.length && !similar.length) {
+      const reason = exactResult.status === 'rejected'
+        ? exactResult.reason?.message
+        : hybridResult.status === 'rejected'
+          ? hybridResult.reason?.message
+          : '没有检索到相关内容';
+      answer = `没有在 pdf-search 中找到相关内容。${reason ? `（${reason}）` : ''}`;
+    } else {
+      try {
+        answer = await generateAnswer(cleanQuestion, exactRaw, similarRaw);
+      } catch (error) {
+        assistantStatus = 'error';
+        errorMessage = String(error?.message || error);
+        answer = '检索已命中，但回答模型暂时不可用。请查看下方引用依据。';
+      }
+    }
+
+    const latencyMs = Date.now() - startedAt;
+    const assistantMessage = await addMessage(req.zhisuoUser, conversation.id, {
+      role: 'assistant',
+      content: answer,
+      status: assistantStatus,
+      model: llm.enabled ? process.env.LLM_MODEL || null : null,
+      latencyMs,
+      errorMessage,
+    });
+    await addCitations(assistantMessage.id, 'exact', exact);
+    await addCitations(assistantMessage.id, 'similar', similar);
+
     return res.json({
       code: 0,
       data: {
+        conversationId: conversation.id,
+        userMessage,
+        assistantMessage: { ...assistantMessage, exact, similar },
         answer,
-        exact: exact.map((item) => toFrontendChunk(item)),
-        similar: similar.map((item) => toFrontendChunk(item)),
+        exact,
+        similar,
       },
     });
   } catch (error) {
-    return res.status(502).json({ code: 502, message: String(error?.message || error) });
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
   }
 });
 

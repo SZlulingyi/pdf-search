@@ -97,8 +97,6 @@ type ChatSession = {
   updatedAt: number;
 };
 
-const SESSION_KEY = 'zhisuo.sessions.v2';
-
 function createSession(): ChatSession {
   const now = Date.now();
   return {
@@ -110,19 +108,7 @@ function createSession(): ChatSession {
   };
 }
 
-function loadInitialSessions() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SESSION_KEY) || '[]') as ChatSession[];
-    if (Array.isArray(parsed) && parsed.length) {
-      return { sessions: parsed, activeId: parsed[0].id };
-    }
-  } catch {
-    // Ignore malformed local sessions.
-  }
-  return { sessions: [], activeId: '' };
-}
 
-const initialSessionState = loadInitialSessions();
 
 function stripHtml(value: string) {
   return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -158,8 +144,8 @@ function App() {
   const [documents, setDocuments] = useState<RagDocument[]>([]);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
-  const [sessions, setSessions] = useState<ChatSession[]>(initialSessionState.sessions);
-  const [activeSessionId, setActiveSessionId] = useState(initialSessionState.activeId);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState('');
   const [input, setInput] = useState('');
   const [editingSessionId, setEditingSessionId] = useState('');
   const [editingTitle, setEditingTitle] = useState('');
@@ -186,10 +172,6 @@ function App() {
   const processingCount = documents.filter((document) => ['UNSTART', 'RUNNING', 'SCHEDULE'].includes(document.run)).length;
   const failedCount = documents.filter((document) => ['FAIL', 'CANCEL'].includes(document.run)).length;
   const sessionIsRunning = Boolean(activeSession?.messages.some((message) => message.pending));
-
-  useEffect(() => {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(sessions.slice(0, 30)));
-  }, [sessions]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -235,6 +217,42 @@ function App() {
       setHealth(await response.json());
     } catch {
       setHealth(null);
+    }
+  }, []);
+
+  const refreshConversations = useCallback(async () => {
+    try {
+      const response = await fetch('/api/conversations');
+      const payload = await response.json().catch(() => null);
+      if (response.status === 401) {
+        setAuthState('anonymous');
+        return;
+      }
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '会话加载失败');
+      const nextSessions: ChatSession[] = (payload.data || []).map((conversation: any) => ({
+        id: conversation.id,
+        title: conversation.title || '新会话',
+        createdAt: Date.parse(conversation.createdAt) || Date.now(),
+        updatedAt: Date.parse(conversation.updatedAt) || Date.now(),
+        messages: (conversation.messages || []).map((message: any) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content || '',
+          exact: message.exact || [],
+          similar: message.similar || [],
+          pending: message.status === 'streaming',
+          error: message.status === 'error',
+          createdAt: Date.parse(message.createdAt) || Date.now(),
+        })),
+      }));
+      setSessions(nextSessions);
+      setActiveSessionId((current) => (
+        current && nextSessions.some((session) => session.id === current)
+          ? current
+          : nextSessions[0]?.id || ''
+      ));
+    } catch {
+      // Keep the current UI state if conversation loading fails.
     }
   }, []);
 
@@ -297,7 +315,8 @@ function App() {
     if (authState !== 'authenticated') return;
     void refreshHealth();
     void refreshDatasets();
-  }, [authState, refreshDatasets, refreshHealth]);
+    void refreshConversations();
+  }, [authState, refreshConversations, refreshDatasets, refreshHealth]);
 
   useEffect(() => {
     if (authState !== 'authenticated' || !selectedDatasetId) return;
@@ -342,6 +361,8 @@ function App() {
     setDatasets([]);
     setDocuments([]);
     setSelectedDatasetId('');
+    setSessions([]);
+    setActiveSessionId('');
   };
 
   const updateSession = (sessionId: string, updater: (session: ChatSession) => ChatSession) => {
@@ -366,9 +387,18 @@ function App() {
     setDeleteConfirmId('');
   };
 
-  const saveRename = (sessionId: string) => {
+  const saveRename = async (sessionId: string) => {
     const title = editingTitle.trim();
     if (title) {
+      try {
+        await fetch(`/api/conversations/${encodeURIComponent(sessionId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: title.slice(0, 80) }),
+        });
+      } catch {
+        // Keep optimistic state even if the request fails.
+      }
       updateSession(sessionId, (session) => ({ ...session, title: title.slice(0, 40) }));
     }
     setEditingSessionId('');
@@ -380,7 +410,12 @@ function App() {
     setEditingTitle('');
   };
 
-  const deleteSession = (sessionId: string) => {
+  const deleteSession = async (sessionId: string) => {
+    try {
+      await fetch(`/api/conversations/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    } catch {
+      // Remove local state even if the server request fails.
+    }
     const next = sessions.filter((session) => session.id !== sessionId);
     setSessions(next);
     if (activeSessionId === sessionId) setActiveSessionId(next[0]?.id || '');
@@ -433,10 +468,6 @@ function App() {
   const sendMessage = async (preset?: string) => {
     const question = (preset ?? input).trim();
     if (!question || sessionIsRunning) return;
-    if (!selectedDatasetId) {
-      setKnowledgeOpen(true);
-      return;
-    }
 
     let sessionId = activeSession?.id;
     if (!sessionId) {
@@ -477,7 +508,7 @@ function App() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ datasetId: selectedDatasetId, question }),
+        body: JSON.stringify({ conversationId: sessionId, question }),
       });
       const payload = await response.json().catch(() => null);
       if (response.status === 401) {
@@ -501,6 +532,8 @@ function App() {
         )),
         updatedAt: Date.now(),
       }));
+      if (payload.data.conversationId) setActiveSessionId(payload.data.conversationId);
+      void refreshConversations();
     } catch (error) {
       updateSession(sessionId, (session) => ({
         ...session,
