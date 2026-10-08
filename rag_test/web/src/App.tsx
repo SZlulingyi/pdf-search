@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
+  Download,
   FileText,
   Files,
   Library,
@@ -570,6 +571,41 @@ function App() {
     }
   };
 
+  const deletePdf = async (document: RagDocument) => {
+    if (!window.confirm(`确定删除《${document.name}》吗？`)) return;
+    setWorkspaceLoading(true);
+    try {
+      const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '删除失败');
+      await refreshDocuments();
+      await refreshDatasets(true);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  };
+
+  const reindexPdf = async (document: RagDocument) => {
+    setWorkspaceLoading(true);
+    try {
+      const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/reindex`, { method: 'POST' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '重新索引失败');
+      await refreshDocuments();
+      await refreshDatasets(true);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  };
+
+  const downloadPdf = (document: RagDocument) => {
+    window.open(`/api/documents/${encodeURIComponent(document.id)}/download`, '_blank', 'noopener,noreferrer');
+  };
+
   const sendMessage = async (preset?: string) => {
     const question = (preset ?? input).trim();
     if (!question || sessionIsRunning) return;
@@ -884,6 +920,9 @@ function App() {
           onUpload={uploadPdfs}
           onRefresh={() => void refreshDocuments()}
           onRetry={() => void retryDocuments()}
+          onDelete={deletePdf}
+          onReindex={reindexPdf}
+          onDownload={downloadPdf}
           onClose={() => setKnowledgeOpen(false)}
         />
       )}
@@ -1110,6 +1149,9 @@ function KnowledgeDrawer({
   onUpload,
   onRefresh,
   onRetry,
+  onDelete,
+  onReindex,
+  onDownload,
   onClose,
 }: {
   dataset?: Dataset;
@@ -1122,6 +1164,9 @@ function KnowledgeDrawer({
   onUpload: (files: FileList | File[]) => void;
   onRefresh: () => void;
   onRetry: () => void;
+  onDelete: (document: RagDocument) => void;
+  onReindex: (document: RagDocument) => void;
+  onDownload: (document: RagDocument) => void;
   onClose: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1165,6 +1210,11 @@ function KnowledgeDrawer({
                 <span className="document-icon"><FileText size={17} /></span>
                 <div><strong>{document.name}</strong><small>{formatBytes(document.size)} · {document.chunk_count || 0} 个片段</small></div>
                 <span className={`status-pill ${meta.tone}`}>{meta.label}</span>
+                <span className="document-actions">
+                  <button className="icon-button" onClick={() => onDownload(document)} title="下载原文件"><Download size={14} /></button>
+                  <button className="icon-button" onClick={() => onReindex(document)} title="重新索引" disabled={loading}><RefreshCw size={14} /></button>
+                  <button className="icon-button danger" onClick={() => onDelete(document)} title="删除文档" disabled={loading}><Trash2 size={14} /></button>
+                </span>
               </div>
             );
           })}

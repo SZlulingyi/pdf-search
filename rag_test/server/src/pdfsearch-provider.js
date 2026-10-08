@@ -55,6 +55,10 @@ export function createPdfSearchProvider({ baseUrl, apiKey = '' }) {
     return request(`/v1/documents/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}`);
   }
 
+  async function deleteDocument(docId) {
+    return request(`/v1/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' });
+  }
+
   async function indexDocument(filePath, fileName) {
     const buffer = await readFile(filePath);
     const form = new FormData();
@@ -71,5 +75,5 @@ export function createPdfSearchProvider({ baseUrl, apiKey = '' }) {
     return payload;
   }
 
-  return { exact, hybrid, health, pageImage, block, indexDocument };
+  return { exact, hybrid, health, pageImage, block, indexDocument, deleteDocument };
 }

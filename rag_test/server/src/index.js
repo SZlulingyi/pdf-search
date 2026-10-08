@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import multer from 'multer';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -22,7 +22,9 @@ import {
 } from './auth-store.js';
 import {
   createDocument,
+  deleteDocument,
   documentStats,
+  getDocument,
   listDocuments,
   toFrontendDocument,
   updateDocument,
@@ -379,6 +381,43 @@ app.post(
     return res.json({ code: 0, data: output });
   },
 );
+
+app.get('/api/documents/:documentId/download', requireSession, async (req, res) => {
+  const document = await getDocument(req.zhisuoUser, req.params.documentId);
+  if (!document) return res.status(404).json({ code: 404, message: 'document not found' });
+  return res.download(document.storagePath, document.fileName);
+});
+
+app.post('/api/documents/:documentId/reindex', requireSession, async (req, res) => {
+  const document = await getDocument(req.zhisuoUser, req.params.documentId);
+  if (!document) return res.status(404).json({ code: 404, message: 'document not found' });
+  await updateDocument(req.zhisuoUser, document.id, { status: 'processing' });
+  try {
+    const result = await pdfsearch.indexDocument(document.storagePath, document.fileName);
+    const indexed = await updateDocument(req.zhisuoUser, document.id, {
+      backendDocId: result.doc_id || result.file_name || document.fileName,
+      status: 'indexed',
+    });
+    return res.json({ code: 0, data: toFrontendDocument(indexed) });
+  } catch (error) {
+    const failed = await updateDocument(req.zhisuoUser, document.id, {
+      status: 'failed',
+      errorMessage: String(error?.message || error),
+    });
+    return res.status(502).json({ code: 502, message: String(error?.message || error), data: toFrontendDocument(failed) });
+  }
+});
+
+app.delete('/api/documents/:documentId', requireSession, async (req, res) => {
+  const document = await getDocument(req.zhisuoUser, req.params.documentId);
+  if (!document) return res.status(404).json({ code: 404, message: 'document not found' });
+  if (document.backendDocId) {
+    await pdfsearch.deleteDocument(document.backendDocId).catch(() => null);
+  }
+  await unlink(document.storagePath).catch(() => null);
+  await deleteDocument(req.zhisuoUser, document.id);
+  return res.json({ code: 0 });
+});
 
 app.post('/api/ragflow/datasets/:datasetId/chunks', requireSession, async (req, res) => {
   const documents = await listDocuments(req.zhisuoUser);

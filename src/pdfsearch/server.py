@@ -81,6 +81,14 @@ async def index_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.delete("/v1/documents/{doc_id}")
+def delete_document(doc_id: str):
+    deleted = get_searcher().delete_document(doc_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="document not found")
+    return {"doc_id": doc_id, "deleted": True}
+
+
 @app.get("/v1/documents/{doc_id}/blocks/{block_id}")
 def get_document_block(doc_id: str, block_id: str):
     block = get_searcher().get_block(doc_id, block_id)

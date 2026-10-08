@@ -42,6 +42,14 @@ export async function listDocuments(userId) {
   return rows.map(docFromRow);
 }
 
+export async function getDocument(userId, documentId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM documents WHERE id = $1 AND user_id = $2 LIMIT 1',
+    [documentId, userId],
+  );
+  return rows[0] ? docFromRow(rows[0]) : null;
+}
+
 export async function documentStats(userId) {
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS document_count,

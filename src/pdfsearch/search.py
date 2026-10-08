@@ -8,6 +8,7 @@ from typing import Optional
 
 import jieba
 from rank_bm25 import BM25Okapi
+from qdrant_client.http import models as rest
 
 from .providers import Embedder, create_embedder
 from .vector_store import create_qdrant_client
@@ -30,13 +31,48 @@ class Searcher:
         with self._lock:
             return self.sqlite.execute(sql, params).fetchall()
 
+    def delete_document(self, doc_id: str) -> bool:
+        existing = self._fetchone("SELECT 1 FROM docs WHERE doc_id=?", (doc_id,))
+        if not existing:
+            return False
+        if self.qdrant.collection_exists(self.cfg["collection"]):
+            self.qdrant.delete(
+                collection_name=self.cfg["collection"],
+                points_selector=rest.Filter(
+                    must=[rest.FieldCondition(key="doc_id", match=rest.MatchValue(value=doc_id))]
+                ),
+            )
+        with self._lock:
+            self.sqlite.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+            self.sqlite.execute("DELETE FROM docs WHERE doc_id=?", (doc_id,))
+            self.sqlite.commit()
+
+        path = os.path.join(self.cfg["data_dir"], "bm25.json")
+        if os.path.exists(path):
+            payload = json.load(open(path, encoding="utf-8"))
+            if "items" in payload:
+                items = [item for item in payload["items"] if item.get("doc_id") != doc_id]
+            else:
+                items = []
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump({"items": items}, output, ensure_ascii=False)
+        self._load_bm25()
+        return True
+
     def _load_bm25(self):
         p = os.path.join(self.cfg["data_dir"], "bm25.json")
-        if os.path.exists(p):
-            d = json.load(open(p, encoding="utf-8"))
-            self.bm25 = BM25Okapi(d["tokens"])
-        else:
+        if not os.path.exists(p):
             self.bm25 = None
+            self.bm25_chunk_ids = []
+            return
+        payload = json.load(open(p, encoding="utf-8"))
+        if "items" in payload:
+            items = payload["items"]
+            self.bm25_chunk_ids = [item["chunk_id"] for item in items]
+            self.bm25 = BM25Okapi([item["tokens"] for item in items]) if items else None
+        else:
+            self.bm25_chunk_ids = [str(index) for index in range(len(payload.get("tokens", [])))]
+            self.bm25 = BM25Okapi(payload["tokens"]) if payload.get("tokens") else None
 
     def _chunk(self, cid):
         row = self._fetchone(
@@ -79,7 +115,8 @@ class Searcher:
         kw_ids = []
         if self.bm25 is not None:
             scores = self.bm25.get_scores(list(jieba.cut(query)))
-            kw_ids = sorted(range(len(scores)), key=lambda i: -scores[i])[:top_k]
+            ranked = sorted(range(len(scores)), key=lambda index: -scores[index])[:top_k]
+            kw_ids = [self.bm25_chunk_ids[index] for index in ranked if index < len(self.bm25_chunk_ids)]
 
         def rrf(rankings, k=60):
             s = {}

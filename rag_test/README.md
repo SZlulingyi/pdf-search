@@ -66,6 +66,17 @@ PDF 上传入口沿用前端知识库上传按钮，后端自动调用 pdf-searc
 POST /v1/documents/index
 ```
 
+## Qdrant Server
+
+Web 多进程部署建议使用 Qdrant Server，避免本地文件锁冲突：
+
+```yaml
+qdrant_url: "http://127.0.0.1:6333"
+qdrant_api_key: ""
+```
+
+未配置 `qdrant_url` 时仍使用本地 `qdrant_path`。
+
 ## 会话存储
 
 Web 版使用 PostgreSQL 保存：

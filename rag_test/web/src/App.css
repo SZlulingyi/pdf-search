@@ -652,7 +652,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   border-radius: 10px;
 }
 
-.drawer-document { grid-template-columns: auto minmax(0, 1fr) auto; }
+.drawer-document { grid-template-columns: auto minmax(0, 1fr) auto auto; }
 .service-row { grid-template-columns: auto minmax(0, 1fr); }
 
 .drawer-document strong, .drawer-document small, .service-row strong, .service-row small { display: block; }
@@ -1429,4 +1429,20 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .user-create-form {
     grid-template-columns: 1fr 1fr;
   }
+}
+
+.document-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.document-actions .icon-button {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+}
+
+.document-actions .icon-button.danger {
+  color: #a14343;
 }
