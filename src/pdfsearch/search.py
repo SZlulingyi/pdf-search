@@ -8,15 +8,15 @@ from typing import Optional
 
 import jieba
 from rank_bm25 import BM25Okapi
-from qdrant_client import QdrantClient
 
 from .providers import Embedder, create_embedder
+from .vector_store import create_qdrant_client
 
 
 class Searcher:
     def __init__(self, cfg, embedder: Optional[Embedder] = None):
         self.cfg = cfg
-        self.qdrant = QdrantClient(path=cfg["qdrant_path"])
+        self.qdrant = create_qdrant_client(cfg)
         self.sqlite = sqlite3.connect(cfg["sqlite_path"], check_same_thread=False)
         self._lock = threading.Lock()
         self.embedder = embedder or create_embedder(cfg)

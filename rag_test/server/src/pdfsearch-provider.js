@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 function joinUrl(baseUrl, path) {
   return `${String(baseUrl || '').replace(/\/+$/, '')}/${String(path || '').replace(/^\/+/, '')}`;
 }
@@ -53,5 +55,21 @@ export function createPdfSearchProvider({ baseUrl, apiKey = '' }) {
     return request(`/v1/documents/${encodeURIComponent(docId)}/blocks/${encodeURIComponent(blockId)}`);
   }
 
-  return { exact, hybrid, health, pageImage, block };
+  async function indexDocument(filePath, fileName) {
+    const buffer = await readFile(filePath);
+    const form = new FormData();
+    form.append('file', new Blob([buffer], { type: 'application/pdf' }), fileName);
+    const response = await fetch(joinUrl(baseUrl, '/v1/documents/index'), {
+      method: 'POST',
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      body: form,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.detail || payload?.message || `pdf-search HTTP ${response.status}`);
+    }
+    return payload;
+  }
+
+  return { exact, hybrid, health, pageImage, block, indexDocument };
 }

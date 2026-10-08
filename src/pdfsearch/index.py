@@ -7,17 +7,17 @@ from typing import Optional
 
 import jieba
 from rank_bm25 import BM25Okapi
-from qdrant_client import QdrantClient
 from qdrant_client.http import models as rest
 
 from .providers import Embedder, create_embedder
+from .vector_store import create_qdrant_client
 
 
 class Indexer:
     def __init__(self, cfg, embedder: Optional[Embedder] = None):
         self.cfg = cfg
         os.makedirs(cfg["data_dir"], exist_ok=True)
-        self.qdrant = QdrantClient(path=cfg["qdrant_path"])
+        self.qdrant = create_qdrant_client(cfg)
         self.sqlite = sqlite3.connect(cfg["sqlite_path"])
         self.embedder = embedder or create_embedder(cfg)
         self._init_db()

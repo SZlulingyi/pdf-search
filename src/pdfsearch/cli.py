@@ -5,8 +5,7 @@ import os
 import sys
 
 from .config import load_config
-from .parse import parse_pdf, blocks_to_markdown
-from .chunk import chunk_blocks
+from .service import index_pdf
 from .index import Indexer
 from .providers import create_ocr_provider
 from .search import Searcher
@@ -19,27 +18,10 @@ def _load(cfg_path):
 
 
 def cmd_index(cfg, pdf_path):
-    blocks = parse_pdf(pdf_path)
-    if cfg.get("ocr", {}).get("enabled"):
-        ocr_provider = create_ocr_provider(cfg)
-        try:
-            scan_blocks = ocr_provider.recognize(pdf_path)
-        finally:
-            ocr_provider.close()
-        print(f"  OCR 扫描页 {len(scan_blocks)} 个")
-        blocks += scan_blocks
-        blocks.sort(key=lambda b: (b.page, 0))
-    md = blocks_to_markdown(blocks)
-    md_path = os.path.join(cfg["data_dir"], "document.md")
-    os.makedirs(cfg["data_dir"], exist_ok=True)
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(md)
-    chunks = chunk_blocks(blocks, cfg["chunk"]["max_chars"])
-    name = os.path.basename(pdf_path)
-    n = Indexer(cfg).index(name, name, chunks, pdf_path=pdf_path)
-    print(f"[解析] {name}")
-    print(f"  Markdown -> {md_path}")
-    print(f"  内容块 {len(blocks)} 个，chunk {n} 个")
+    result = index_pdf(cfg, pdf_path)
+    print(f"[解析] {result['file_name']}")
+    print(f"  Markdown -> {result['markdown_path']}")
+    print(f"  内容块 {result['block_count']} 个，chunk {result['chunk_count']} 个")
 
 
 def cmd_query(cfg, query):

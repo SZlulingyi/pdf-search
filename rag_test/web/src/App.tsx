@@ -114,6 +114,29 @@ function stripHtml(value: string) {
   return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+async function consumeSse(
+  response: Response,
+  onEvent: (event: string, payload: any) => void,
+) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('浏览器不支持流式响应');
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split('\n\n');
+    buffer = chunks.pop() || '';
+    for (const chunk of chunks) {
+      const event = chunk.split('\n').find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message';
+      const dataLine = chunk.split('\n').find((line) => line.startsWith('data:'))?.slice(5).trim();
+      if (!dataLine) continue;
+      onEvent(event, JSON.parse(dataLine));
+    }
+  }
+}
+
 function formatBytes(bytes: number) {
   if (!bytes) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -504,50 +527,61 @@ function App() {
       };
     }));
 
+    let streamed = '';
+    const patchAssistant = (patch: Partial<ChatMessage>) => {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        messages: session.messages.map((message) => (
+          message.id === assistantId ? { ...message, ...patch } : message
+        )),
+        updatedAt: Date.now(),
+      }));
+    };
+
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId: sessionId, question }),
       });
-      const payload = await response.json().catch(() => null);
       if (response.status === 401) {
         setAuthState('anonymous');
         throw new Error('登录已过期，请重新登录');
       }
-      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '回答失败');
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message || `回答失败: HTTP ${response.status}`);
+      }
 
-      updateSession(sessionId, (session) => ({
-        ...session,
-        messages: session.messages.map((message) => (
-          message.id === assistantId
-            ? {
-                ...message,
-                content: payload.data.answer,
-                exact: payload.data.exact || [],
-                similar: payload.data.similar || [],
-                pending: false,
-              }
-            : message
-        )),
-        updatedAt: Date.now(),
-      }));
-      if (payload.data.conversationId) setActiveSessionId(payload.data.conversationId);
-      void refreshConversations();
+      let completed = false;
+      await consumeSse(response, (event, payload) => {
+        if (event === 'meta' && payload.conversationId) {
+          setActiveSessionId(payload.conversationId);
+        }
+        if (event === 'citations') {
+          patchAssistant({ exact: payload.exact || [], similar: payload.similar || [] });
+        }
+        if (event === 'token' && payload.token) {
+          streamed += payload.token;
+          patchAssistant({ content: streamed, pending: true });
+        }
+        if (event === 'done') {
+          completed = true;
+          if (payload.conversationId) setActiveSessionId(payload.conversationId);
+          patchAssistant({ content: payload.answer || streamed, pending: false });
+          void refreshConversations();
+        }
+        if (event === 'error') {
+          throw new Error(payload.message || '回答生成失败');
+        }
+      });
+      if (!completed) throw new Error('回答连接提前结束');
     } catch (error) {
-      updateSession(sessionId, (session) => ({
-        ...session,
-        messages: session.messages.map((message) => (
-          message.id === assistantId
-            ? {
-                ...message,
-                content: error instanceof Error ? error.message : String(error),
-                error: true,
-                pending: false,
-              }
-            : message
-        )),
-      }));
+      patchAssistant({
+        content: error instanceof Error ? error.message : String(error),
+        error: true,
+        pending: false,
+      });
     }
   };
 

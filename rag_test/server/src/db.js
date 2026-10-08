@@ -9,6 +9,24 @@ export const pool = new Pool({ connectionString });
 
 export async function initDb() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_login_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -35,6 +53,21 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      file_size BIGINT NOT NULL DEFAULT 0,
+      file_hash TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      backend_doc_id TEXT,
+      status TEXT NOT NULL DEFAULT 'queued',
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, file_hash)
+    );
+
     CREATE TABLE IF NOT EXISTS message_citations (
       id TEXT PRIMARY KEY,
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -43,6 +76,10 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
+      ON auth_sessions(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_documents_user_created
+      ON documents(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
       ON conversations(user_id, pinned DESC, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_created

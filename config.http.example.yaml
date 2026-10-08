@@ -2,6 +2,8 @@
 model_dir: ""  # provider=http 时不需要本地 BGE 模型目录
 pdf_dir: ""
 data_dir: "data"
+qdrant_url: ""
+qdrant_api_key: ""
 qdrant_path: "data/qdrant"
 sqlite_path: "data/index.db"
 collection: "doc_chunks"

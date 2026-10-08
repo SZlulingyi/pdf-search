@@ -41,6 +41,31 @@ POST /v1/search/hybrid
 
 注意：pdf-search 当前 FastAPI 没有上传/索引入口。请先通过 `pdfsearch index <pdf>` 完成入库，再在前端提问。
 
+## Web 功能
+
+当前 Web 版包含：
+
+```text
+PostgreSQL 用户登录
+会话列表、重命名、删除
+消息和引用持久化
+PDF 上传并自动索引
+流式聊天 SSE
+PDF 页面预览和 bbox 高亮
+```
+
+流式聊天接口：
+
+```text
+POST /api/chat/stream
+```
+
+PDF 上传入口沿用前端知识库上传按钮，后端自动调用 pdf-search：
+
+```text
+POST /v1/documents/index
+```
+
 ## 会话存储
 
 Web 版使用 PostgreSQL 保存：

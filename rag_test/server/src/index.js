@@ -1,11 +1,32 @@
 import express from 'express';
 import path from 'node:path';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import multer from 'multer';
+import { readFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { createPdfSearchProvider } from './pdfsearch-provider.js';
 import { createLlmProvider } from './llm-provider.js';
 import { initDb, checkDb } from './db.js';
+import {
+  createAuthSession,
+  createUser,
+  deleteAuthSession,
+  deleteUser,
+  ensureBootstrapAdmin,
+  findUserByUsername,
+  getAuthSession,
+  listUsers,
+  touchLastLogin,
+  verifyPassword,
+} from './auth-store.js';
+import {
+  createDocument,
+  documentStats,
+  listDocuments,
+  toFrontendDocument,
+  updateDocument,
+} from './document-store.js';
 import {
   addCitations,
   addMessage,
@@ -27,9 +48,16 @@ const CONSOLE_USER = process.env.CONSOLE_USER || 'admin';
 const CONSOLE_PASSWORD = process.env.CONSOLE_PASSWORD || 'admin';
 const SESSION_COOKIE = 'zhisuo_session';
 const VIRTUAL_DATASET_ID = 'pdfsearch';
+const UPLOAD_DIR = path.resolve(__dirname, '../../data/uploads');
+const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 500 * 1024 * 1024);
+
+mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app = express();
-const sessions = new Map();
+const upload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: UPLOAD_MAX_BYTES },
+});
 const pdfsearch = createPdfSearchProvider({
   baseUrl: PDFSEARCH_BASE_URL,
   apiKey: PDFSEARCH_API_KEY,
@@ -42,6 +70,7 @@ const llm = createLlmProvider({
 
 try {
   await initDb();
+  await ensureBootstrapAdmin(CONSOLE_USER, CONSOLE_PASSWORD);
 } catch (error) {
   console.error('[zhisuo] PostgreSQL initialization failed:', error);
   process.exit(1);
@@ -57,37 +86,39 @@ function parseCookies(header = '') {
   }).filter(([key]) => key));
 }
 
-function safeEqual(left, right) {
-  const a = Buffer.from(String(left));
-  const b = Buffer.from(String(right));
-  return a.length === b.length && timingSafeEqual(a, b);
+function sessionToken(req) {
+  return parseCookies(req.headers.cookie)[SESSION_COOKIE] || '';
 }
 
-function currentSession(req) {
-  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  const session = token ? sessions.get(token) : null;
-  if (!session || session.expiresAt < Date.now()) {
-    if (token) sessions.delete(token);
-    return null;
+async function requireSession(req, res, next) {
+  try {
+    const auth = await getAuthSession(sessionToken(req));
+    if (!auth) return res.status(401).json({ code: 401, message: '请先登录' });
+    req.zhisuoUser = auth.user.id;
+    req.zhisuoUserRecord = auth.user;
+    return next();
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
   }
-  return { token, ...session };
 }
 
-function requireSession(req, res, next) {
-  const session = currentSession(req);
-  if (!session) return res.status(401).json({ code: 401, message: '请先登录' });
-  req.zhisuoUser = session.user;
+async function requireAdmin(req, res, next) {
+  const auth = await getAuthSession(sessionToken(req));
+  if (!auth) return res.status(401).json({ code: 401, message: '请先登录' });
+  if (auth.user.role !== 'admin') return res.status(403).json({ code: 403, message: '需要管理员权限' });
+  req.zhisuoUser = auth.user.id;
+  req.zhisuoUserRecord = auth.user;
   return next();
 }
 
-function datasetPayload() {
+function datasetPayload(stats = {}) {
   return {
     id: VIRTUAL_DATASET_ID,
     name: 'pdf-search 知识库',
     description: '由 pdf-search FastAPI 提供检索能力',
-    document_count: 0,
-    chunk_count: 0,
-    done_count: 0,
+    document_count: stats.document_count || 0,
+    chunk_count: stats.chunk_count || 0,
+    done_count: stats.done_count || 0,
     embedding_model: 'BGE-M3',
   };
 }
@@ -157,28 +188,85 @@ async function generateAnswer(question, exact, similar) {
   return `我在 pdf-search 中找到了以下相关内容：\n\n${primary}${extra ? `\n\n补充信息：\n${extra}` : ''}`;
 }
 
-app.post('/api/auth/login', express.json({ limit: '16kb' }), (req, res) => {
-  const { username, password } = req.body || {};
-  if (!safeEqual(username || '', CONSOLE_USER) || !safeEqual(password || '', CONSOLE_PASSWORD)) {
-    return res.status(401).json({ code: 401, message: '账号或密码不正确' });
+app.post('/api/auth/login', express.json({ limit: '16kb' }), async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const user = await findUserByUsername(username);
+    if (!user || user.status !== 'active' || !verifyPassword(password || '', user.passwordHash)) {
+      return res.status(401).json({ code: 401, message: '账号或密码不正确' });
+    }
+    const { token } = await createAuthSession(user.id);
+    await touchLastLogin(user.id);
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+    return res.json({ code: 0, data: { username: user.username, role: user.role } });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
   }
-  const token = randomBytes(32).toString('hex');
-  sessions.set(token, { user: CONSOLE_USER, expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 });
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
-  return res.json({ code: 0, data: { username: CONSOLE_USER } });
 });
 
-app.get('/api/auth/session', (req, res) => {
-  const session = currentSession(req);
-  if (!session) return res.status(401).json({ code: 401, authenticated: false });
-  return res.json({ code: 0, authenticated: true, data: { username: session.user } });
+app.get('/api/auth/session', async (req, res) => {
+  try {
+    const auth = await getAuthSession(sessionToken(req));
+    if (!auth) return res.status(401).json({ code: 401, authenticated: false });
+    return res.json({ code: 0, authenticated: true, data: { username: auth.user.username, role: auth.user.role } });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
 });
 
-app.post('/api/auth/logout', (req, res) => {
-  const session = currentSession(req);
-  if (session) sessions.delete(session.token);
+app.post('/api/auth/logout', async (req, res) => {
+  await deleteAuthSession(sessionToken(req)).catch(() => null);
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
   return res.json({ code: 0 });
+});
+
+app.get('/api/users', requireAdmin, async (_req, res) => {
+  try {
+    const users = await listUsers();
+    return res.json({
+      code: 0,
+      data: users.map((user) => ({
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        status: user.status,
+        createdAt: user.createdAt,
+        lastLoginAt: user.lastLoginAt,
+      })),
+    });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
+app.post('/api/users', requireAdmin, express.json({ limit: '16kb' }), async (req, res) => {
+  try {
+    const { username, password, role } = req.body || {};
+    if (!String(username || '').trim() || !String(password || '')) {
+      return res.status(400).json({ code: 400, message: 'username and password are required' });
+    }
+    const user = await createUser(username, password, role);
+    return res.json({
+      code: 0,
+      data: { id: user.id, username: user.username, role: user.role, status: user.status },
+    });
+  } catch (error) {
+    const message = String(error?.message || error);
+    return res.status(message.includes('duplicate') ? 409 : 500).json({ code: 409, message });
+  }
+});
+
+app.delete('/api/users/:userId', requireAdmin, async (req, res) => {
+  try {
+    if (req.params.userId === req.zhisuoUser) {
+      return res.status(400).json({ code: 400, message: '不能删除当前登录用户' });
+    }
+    const deleted = await deleteUser(req.params.userId);
+    if (!deleted) return res.status(404).json({ code: 404, message: '用户不存在' });
+    return res.json({ code: 0 });
+  } catch (error) {
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
 });
 
 app.get('/api/health', async (_req, res) => {
@@ -230,33 +318,71 @@ app.get('/api/setup', (_req, res) => {
   });
 });
 
-app.get('/api/ragflow/datasets', requireSession, (_req, res) => {
-  res.json({ code: 0, data: [datasetPayload()] });
+app.get('/api/ragflow/datasets', requireSession, async (req, res) => {
+  const stats = await documentStats(req.zhisuoUser);
+  res.json({ code: 0, data: [datasetPayload(stats)] });
 });
 
-app.post('/api/ragflow/datasets', requireSession, (_req, res) => {
-  res.json({ code: 0, data: datasetPayload() });
+app.post('/api/ragflow/datasets', requireSession, async (req, res) => {
+  const stats = await documentStats(req.zhisuoUser);
+  res.json({ code: 0, data: datasetPayload(stats) });
 });
 
-app.get('/api/ragflow/datasets/:datasetId/documents', requireSession, (req, res) => {
+app.get('/api/ragflow/datasets/:datasetId/documents', requireSession, async (req, res) => {
   if (req.params.datasetId !== VIRTUAL_DATASET_ID) {
     return res.status(404).json({ code: 404, message: 'dataset not found' });
   }
-  return res.json({ code: 0, data: { docs: [], total: 0 } });
+  const documents = await listDocuments(req.zhisuoUser);
+  return res.json({ code: 0, data: { docs: documents.map(toFrontendDocument), total: documents.length } });
 });
 
-app.post('/api/ragflow/datasets/:datasetId/documents', requireSession, (_req, res) => {
-  return res.status(501).json({
-    code: 501,
-    message: 'pdf-search 当前不提供上传/索引接口，请先通过 pdf-search CLI 或索引流程完成 PDF 入库。',
-  });
-});
+app.post(
+  '/api/ragflow/datasets/:datasetId/documents',
+  requireSession,
+  upload.array('file'),
+  async (req, res) => {
+    if (req.params.datasetId !== VIRTUAL_DATASET_ID) {
+      return res.status(404).json({ code: 404, message: 'dataset not found' });
+    }
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!files.length) return res.status(400).json({ code: 400, message: 'file is required' });
+    const output = [];
+    for (const file of files) {
+      const buffer = await readFile(file.path);
+      const fileHash = createHash('sha256').update(buffer).digest('hex');
+      const existing = (await listDocuments(req.zhisuoUser)).find((doc) => doc.fileHash === fileHash);
+      if (existing) {
+        output.push(toFrontendDocument(existing));
+        continue;
+      }
+      const document = await createDocument(req.zhisuoUser, {
+        fileName: file.originalname,
+        fileSize: file.size,
+        fileHash,
+        storagePath: file.path,
+      });
+      try {
+        const result = await pdfsearch.indexDocument(file.path, file.originalname);
+        const indexed = await updateDocument(req.zhisuoUser, document.id, {
+          backendDocId: result.doc_id || result.file_name || file.originalname,
+          status: 'indexed',
+        });
+        output.push(toFrontendDocument(indexed));
+      } catch (error) {
+        const failed = await updateDocument(req.zhisuoUser, document.id, {
+          status: 'failed',
+          errorMessage: String(error?.message || error),
+        });
+        output.push(toFrontendDocument(failed));
+      }
+    }
+    return res.json({ code: 0, data: output });
+  },
+);
 
-app.post('/api/ragflow/datasets/:datasetId/chunks', requireSession, (_req, res) => {
-  return res.status(501).json({
-    code: 501,
-    message: 'pdf-search 当前不提供远程分块接口，请先通过 pdf-search CLI 或索引流程完成 PDF 入库。',
-  });
+app.post('/api/ragflow/datasets/:datasetId/chunks', requireSession, async (req, res) => {
+  const documents = await listDocuments(req.zhisuoUser);
+  return res.json({ code: 0, data: documents.map(toFrontendDocument) });
 });
 
 app.get('/api/pdfsearch/documents/:docId/pages/:page/image', requireSession, async (req, res) => {
@@ -413,6 +539,117 @@ app.post('/api/chat', requireSession, async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  }
+});
+
+function sendSse(res, event, payload) {
+  res.write(`event: ${event}
+`);
+  res.write(`data: ${JSON.stringify(payload)}
+
+`);
+}
+
+app.post('/api/chat/stream', requireSession, async (req, res) => {
+  const { question, conversationId } = req.body || {};
+  const cleanQuestion = String(question || '').trim();
+  if (!cleanQuestion) return res.status(400).json({ code: 400, message: 'question is required' });
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  let conversation = null;
+  let userMessage = null;
+  let assistantMessage = null;
+  let answer = '';
+  let exact = [];
+  let similar = [];
+  let exactRaw = [];
+  let similarRaw = [];
+
+  try {
+    conversation = conversationId
+      ? await getConversation(req.zhisuoUser, conversationId)
+      : null;
+    if (!conversation) {
+      conversation = await createConversation(
+        req.zhisuoUser,
+        cleanQuestion.slice(0, 40),
+        conversationId || randomUUID(),
+      );
+    }
+
+    userMessage = await addMessage(req.zhisuoUser, conversation.id, {
+      role: 'user',
+      content: cleanQuestion,
+      status: 'complete',
+    });
+    sendSse(res, 'meta', { conversationId: conversation.id, userMessageId: userMessage.id });
+
+    const exactTerm = extractSearchTerm(cleanQuestion);
+    const [exactResult, hybridResult] = await Promise.allSettled([
+      pdfsearch.exact(exactTerm, 8),
+      pdfsearch.hybrid(cleanQuestion, 8),
+    ]);
+    exactRaw = exactResult.status === 'fulfilled' ? exactResult.value?.results || [] : [];
+    similarRaw = hybridResult.status === 'fulfilled' ? hybridResult.value?.results || [] : [];
+    exact = exactRaw.map((item) => toFrontendChunk(item));
+    similar = similarRaw.map((item) => toFrontendChunk(item));
+    sendSse(res, 'citations', { exact, similar });
+
+    const chunks = uniqueResults(exactRaw, similarRaw);
+    if (llm.enabled && chunks.length) {
+      const evidence = chunks
+        .slice(0, 6)
+        .map((chunk, index) => `[${index + 1}] ${chunk.content}`)
+        .join('\n\n');
+      answer = await llm.stream([
+        {
+          role: 'system',
+          content: '你是知索，一个严谨的中文知识库助手。只能依据检索资料回答；资料不足时明确说明，不要编造。回答简洁，并保留来源信息。',
+        },
+        { role: 'user', content: `问题：${cleanQuestion}\n\n检索资料：\n${evidence}` },
+      ], (token) => sendSse(res, 'token', { token }));
+    } else {
+      answer = chunks.length
+        ? `我在 pdf-search 中找到了以下相关内容：\n\n${chunks[0].content.slice(0, 1200)}`
+        : '没有在 pdf-search 中找到相关内容。';
+      sendSse(res, 'token', { token: answer });
+    }
+
+    assistantMessage = await addMessage(req.zhisuoUser, conversation.id, {
+      role: 'assistant',
+      content: answer,
+      status: 'complete',
+      model: llm.enabled ? process.env.LLM_MODEL || null : null,
+    });
+    await addCitations(assistantMessage.id, 'exact', exact);
+    await addCitations(assistantMessage.id, 'similar', similar);
+    sendSse(res, 'done', {
+      conversationId: conversation.id,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      answer,
+    });
+    res.end();
+  } catch (error) {
+    const message = String(error?.message || error);
+    try {
+      if (conversation) {
+        assistantMessage = await addMessage(req.zhisuoUser, conversation.id, {
+          role: 'assistant',
+          content: '回答生成失败，请稍后重试。',
+          status: 'error',
+          errorMessage: message,
+        });
+      }
+    } catch {
+      // Ignore persistence errors while reporting the original failure.
+    }
+    sendSse(res, 'error', { message, conversationId: conversation?.id, userMessageId: userMessage?.id, assistantMessageId: assistantMessage?.id });
+    res.end();
   }
 });
 
