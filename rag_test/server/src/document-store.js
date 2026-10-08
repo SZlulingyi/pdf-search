@@ -70,7 +70,7 @@ export async function createDocument(userId, file) {
   const { rows } = await pool.query(
     `INSERT INTO documents (
        id, user_id, file_name, file_size, file_hash, storage_path, status
-     ) VALUES ($1,$2,$3,$4,$5,$6,'processing')
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7)
      RETURNING *`,
     [
       randomUUID(),
@@ -79,6 +79,7 @@ export async function createDocument(userId, file) {
       file.fileSize,
       file.fileHash,
       file.storagePath,
+      file.status || 'queued',
     ],
   );
   return docFromRow(rows[0]);
@@ -102,6 +103,33 @@ export async function updateDocument(userId, documentId, patch) {
     ],
   );
   return rows[0] ? docFromRow(rows[0]) : null;
+}
+
+export async function claimNextQueuedDocument() {
+  const { rows } = await pool.query(
+    `UPDATE documents
+        SET status = 'processing', updated_at = NOW()
+      WHERE id = (
+        SELECT id FROM documents
+         WHERE status = 'queued'
+         ORDER BY created_at ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1
+      )
+      RETURNING *`,
+  );
+  return rows[0] ? docFromRow(rows[0]) : null;
+}
+
+export async function requeueDocuments(userId, documentIds = []) {
+  if (!documentIds.length) return 0;
+  const { rowCount } = await pool.query(
+    `UPDATE documents
+        SET status = 'queued', error_message = NULL, updated_at = NOW()
+      WHERE user_id = $1 AND id = ANY($2::text[])`,
+    [userId, documentIds],
+  );
+  return rowCount;
 }
 
 export async function deleteDocument(userId, documentId) {

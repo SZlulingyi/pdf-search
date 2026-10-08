@@ -1479,3 +1479,26 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     justify-content: flex-end;
   }
 }
+
+.message-regenerate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: #f1f5f2;
+  color: #587064;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.message-regenerate:hover {
+  background: #e5eee8;
+}
+
+.send-button.stop {
+  background: #8f4b4b;
+  color: #fff;
+}

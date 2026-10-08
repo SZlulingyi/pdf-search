@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --env-file-if-exists=../.env --watch src/index.js",
     "start": "node --env-file-if-exists=../.env src/index.js",
-    "build": "node --check src/index.js"
+    "build": "node --check src/index.js",
+    "worker": "node --env-file-if-exists=../.env src/index-worker.js"
   },
   "dependencies": {
     "express": "^4.21.2",

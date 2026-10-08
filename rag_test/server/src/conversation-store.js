@@ -136,6 +136,22 @@ export async function addCitations(messageId, kind, citations = []) {
   return rows.map((row) => row.payload);
 }
 
+export async function getMessage(userId, conversationId, messageId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM messages WHERE id = $1 AND conversation_id = $2 AND user_id = $3 LIMIT 1`,
+    [messageId, conversationId, userId],
+  );
+  return rows[0] ? messageFromRow(rows[0]) : null;
+}
+
+export async function deleteMessage(userId, conversationId, messageId) {
+  const { rowCount } = await pool.query(
+    `DELETE FROM messages WHERE id = $1 AND conversation_id = $2 AND user_id = $3`,
+    [messageId, conversationId, userId],
+  );
+  return rowCount > 0;
+}
+
 export async function loadConversationMessages(userId, conversationId) {
   const { rows } = await pool.query(
     `SELECT *

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createPdfSearchProvider } from './pdfsearch-provider.js';
 import { createLlmProvider } from './llm-provider.js';
+import { startIndexWorker } from './index-worker.js';
 import { initDb, checkDb } from './db.js';
 import {
   createAuthSession,
@@ -19,6 +20,7 @@ import {
   listUsers,
   touchLastLogin,
   updateUser,
+  validatePassword,
   verifyPassword,
 } from './auth-store.js';
 import {
@@ -27,6 +29,7 @@ import {
   documentStats,
   getDocument,
   listDocuments,
+  requeueDocuments,
   toFrontendDocument,
   updateDocument,
 } from './document-store.js';
@@ -35,7 +38,9 @@ import {
   addMessage,
   createConversation,
   deleteConversation,
+  deleteMessage,
   getConversation,
+  getMessage,
   listConversationsWithMessages,
   loadConversationMessages,
   updateConversation,
@@ -50,6 +55,7 @@ const PDFSEARCH_API_KEY = process.env.PDFSEARCH_API_KEY || '';
 const CONSOLE_USER = process.env.CONSOLE_USER || 'admin';
 const CONSOLE_PASSWORD = process.env.CONSOLE_PASSWORD || 'admin';
 const SESSION_COOKIE = 'zhisuo_session';
+const CSRF_COOKIE = 'zhisuo_csrf';
 const VIRTUAL_DATASET_ID = 'pdfsearch';
 const UPLOAD_DIR = path.resolve(__dirname, '../../data/uploads');
 const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 500 * 1024 * 1024);
@@ -74,6 +80,7 @@ const llm = createLlmProvider({
 try {
   await initDb();
   await ensureBootstrapAdmin(CONSOLE_USER, CONSOLE_PASSWORD);
+  if (process.env.WORKER_ENABLED !== 'false') startIndexWorker();
 } catch (error) {
   console.error('[zhisuo] PostgreSQL initialization failed:', error);
   process.exit(1);
@@ -81,6 +88,32 @@ try {
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
+
+function createCsrfToken() {
+  return randomUUID().replace(/-/g, '');
+}
+
+function setCsrfCookie(res, token = createCsrfToken()) {
+  res.setHeader(
+    'Set-Cookie',
+    `${CSRF_COOKIE}=${token}; SameSite=Lax; Path=/; Max-Age=604800`,
+  );
+  return token;
+}
+
+app.use((req, res, next) => {
+  const method = String(req.method || 'GET').toUpperCase();
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return next();
+  if (req.path === '/api/auth/login') return next();
+  const cookies = parseCookies(req.headers.cookie);
+  const expected = cookies[CSRF_COOKIE];
+  const actual = req.headers['x-csrf-token'];
+  if (!expected || actual !== expected) {
+    return res.status(403).json({ code: 403, message: 'CSRF token invalid' });
+  }
+  return next();
+});
+
 
 function parseCookies(header = '') {
   return Object.fromEntries(header.split(';').map((part) => {
@@ -113,6 +146,51 @@ async function requireAdmin(req, res, next) {
   req.zhisuoUserRecord = auth.user;
   return next();
 }
+
+const rateBuckets = new Map();
+
+function rateLimit({ windowMs, max, keyFn, message }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = keyFn(req);
+    const bucket = rateBuckets.get(key);
+    const entry = bucket && bucket.resetAt > now ? bucket : { count: 0, resetAt: now + windowMs };
+    entry.count += 1;
+    rateBuckets.set(key, entry);
+    if (entry.count > max) {
+      const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+      res.setHeader('Retry-After', String(retryAfter));
+      return res.status(429).json({ code: 429, message: message || '请求过于频繁，请稍后重试' });
+    }
+    if (rateBuckets.size > 10000) {
+      for (const [bucketKey, value] of rateBuckets) {
+        if (value.resetAt <= now) rateBuckets.delete(bucketKey);
+      }
+    }
+    return next();
+  };
+}
+
+const loginRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyFn: (req) => `login:${req.ip}`,
+  message: '登录尝试过多，请 15 分钟后再试',
+});
+
+const chatRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  keyFn: (req) => `chat:${req.zhisuoUser}`,
+  message: '聊天请求过于频繁，请稍后重试',
+});
+
+const uploadRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  keyFn: (req) => `upload:${req.zhisuoUser}`,
+  message: '上传请求过于频繁，请稍后重试',
+});
 
 function datasetPayload(stats = {}) {
   return {
@@ -191,7 +269,7 @@ async function generateAnswer(question, exact, similar) {
   return `我在 pdf-search 中找到了以下相关内容：\n\n${primary}${extra ? `\n\n补充信息：\n${extra}` : ''}`;
 }
 
-app.post('/api/auth/login', express.json({ limit: '16kb' }), async (req, res) => {
+app.post('/api/auth/login', loginRateLimit, express.json({ limit: '16kb' }), async (req, res) => {
   try {
     const { username, password } = req.body || {};
     const user = await findUserByUsername(username);
@@ -200,7 +278,8 @@ app.post('/api/auth/login', express.json({ limit: '16kb' }), async (req, res) =>
     }
     const { token } = await createAuthSession(user.id);
     await touchLastLogin(user.id);
-    res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+    const csrfToken = setCsrfCookie(res);
+    res.append('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
     return res.json({ code: 0, data: { username: user.username, role: user.role } });
   } catch (error) {
     return res.status(500).json({ code: 500, message: String(error?.message || error) });
@@ -211,6 +290,7 @@ app.get('/api/auth/session', async (req, res) => {
   try {
     const auth = await getAuthSession(sessionToken(req));
     if (!auth) return res.status(401).json({ code: 401, authenticated: false });
+    if (!parseCookies(req.headers.cookie)[CSRF_COOKIE]) setCsrfCookie(res);
     return res.json({ code: 0, authenticated: true, data: { username: auth.user.username, role: auth.user.role } });
   } catch (error) {
     return res.status(500).json({ code: 500, message: String(error?.message || error) });
@@ -219,7 +299,8 @@ app.get('/api/auth/session', async (req, res) => {
 
 app.post('/api/auth/logout', async (req, res) => {
   await deleteAuthSession(sessionToken(req)).catch(() => null);
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+  res.append('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+  res.append('Set-Cookie', `${CSRF_COOKIE}=; SameSite=Lax; Path=/; Max-Age=0`);
   return res.json({ code: 0 });
 });
 
@@ -248,6 +329,8 @@ app.post('/api/users', requireAdmin, express.json({ limit: '16kb' }), async (req
     if (!String(username || '').trim() || !String(password || '')) {
       return res.status(400).json({ code: 400, message: 'username and password are required' });
     }
+    const passwordError = validatePassword(password);
+    if (passwordError) return res.status(400).json({ code: 400, message: passwordError });
     const user = await createUser(username, password, role);
     return res.json({
       code: 0,
@@ -263,6 +346,10 @@ app.patch('/api/users/:userId', requireAdmin, express.json({ limit: '16kb' }), a
   try {
     const targetId = req.params.userId;
     const patch = req.body || {};
+    if (patch.password) {
+      const passwordError = validatePassword(patch.password);
+      if (passwordError) return res.status(400).json({ code: 400, message: passwordError });
+    }
     if (targetId === req.zhisuoUser && (patch.role === 'member' || patch.status === 'disabled')) {
       return res.status(400).json({ code: 400, message: '不能禁用或降级当前登录用户' });
     }
@@ -360,6 +447,7 @@ app.get('/api/ragflow/datasets/:datasetId/documents', requireSession, async (req
 app.post(
   '/api/ragflow/datasets/:datasetId/documents',
   requireSession,
+  uploadRateLimit,
   upload.array('file'),
   async (req, res) => {
     if (req.params.datasetId !== VIRTUAL_DATASET_ID) {
@@ -381,21 +469,9 @@ app.post(
         fileSize: file.size,
         fileHash,
         storagePath: file.path,
+        status: 'queued',
       });
-      try {
-        const result = await pdfsearch.indexDocument(file.path, file.originalname);
-        const indexed = await updateDocument(req.zhisuoUser, document.id, {
-          backendDocId: result.doc_id || result.file_name || file.originalname,
-          status: 'indexed',
-        });
-        output.push(toFrontendDocument(indexed));
-      } catch (error) {
-        const failed = await updateDocument(req.zhisuoUser, document.id, {
-          status: 'failed',
-          errorMessage: String(error?.message || error),
-        });
-        output.push(toFrontendDocument(failed));
-      }
+      output.push(toFrontendDocument(document));
     }
     return res.json({ code: 0, data: output });
   },
@@ -410,21 +486,11 @@ app.get('/api/documents/:documentId/download', requireSession, async (req, res) 
 app.post('/api/documents/:documentId/reindex', requireSession, async (req, res) => {
   const document = await getDocument(req.zhisuoUser, req.params.documentId);
   if (!document) return res.status(404).json({ code: 404, message: 'document not found' });
-  await updateDocument(req.zhisuoUser, document.id, { status: 'processing' });
-  try {
-    const result = await pdfsearch.indexDocument(document.storagePath, document.fileName);
-    const indexed = await updateDocument(req.zhisuoUser, document.id, {
-      backendDocId: result.doc_id || result.file_name || document.fileName,
-      status: 'indexed',
-    });
-    return res.json({ code: 0, data: toFrontendDocument(indexed) });
-  } catch (error) {
-    const failed = await updateDocument(req.zhisuoUser, document.id, {
-      status: 'failed',
-      errorMessage: String(error?.message || error),
-    });
-    return res.status(502).json({ code: 502, message: String(error?.message || error), data: toFrontendDocument(failed) });
-  }
+  const queued = await updateDocument(req.zhisuoUser, document.id, {
+    status: 'queued',
+    errorMessage: null,
+  });
+  return res.json({ code: 0, data: toFrontendDocument(queued) });
 });
 
 app.delete('/api/documents/:documentId', requireSession, async (req, res) => {
@@ -439,6 +505,8 @@ app.delete('/api/documents/:documentId', requireSession, async (req, res) => {
 });
 
 app.post('/api/ragflow/datasets/:datasetId/chunks', requireSession, async (req, res) => {
+  const ids = Array.isArray(req.body?.document_ids) ? req.body.document_ids : [];
+  await requeueDocuments(req.zhisuoUser, ids);
   const documents = await listDocuments(req.zhisuoUser);
   return res.json({ code: 0, data: documents.map(toFrontendDocument) });
 });
@@ -517,7 +585,7 @@ app.delete('/api/conversations/:conversationId', requireSession, async (req, res
   }
 });
 
-app.post('/api/chat', requireSession, async (req, res) => {
+app.post('/api/chat', requireSession, chatRateLimit, async (req, res) => {
   const { question, conversationId } = req.body || {};
   const cleanQuestion = String(question || '').trim();
   if (!cleanQuestion) return res.status(400).json({ code: 400, message: 'question is required' });
@@ -608,8 +676,8 @@ function sendSse(res, event, payload) {
 `);
 }
 
-app.post('/api/chat/stream', requireSession, async (req, res) => {
-  const { question, conversationId } = req.body || {};
+app.post('/api/chat/stream', requireSession, chatRateLimit, async (req, res) => {
+  const { question, conversationId, regenerate = false, assistantMessageId } = req.body || {};
   const cleanQuestion = String(question || '').trim();
   if (!cleanQuestion) return res.status(400).json({ code: 400, message: 'question is required' });
 
@@ -618,14 +686,25 @@ app.post('/api/chat/stream', requireSession, async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
+  const abortController = new AbortController();
+  let closed = false;
+  res.on('close', () => {
+    closed = true;
+    if (!abortController.signal.aborted) abortController.abort();
+  });
+
+  const send = (event, payload) => {
+    if (closed || res.writableEnded) return;
+    sendSse(res, event, payload);
+  };
+
   let conversation = null;
   let userMessage = null;
   let assistantMessage = null;
   let answer = '';
+  let streamedAnswer = '';
   let exact = [];
   let similar = [];
-  let exactRaw = [];
-  let similarRaw = [];
 
   try {
     conversation = conversationId
@@ -639,23 +718,36 @@ app.post('/api/chat/stream', requireSession, async (req, res) => {
       );
     }
 
-    userMessage = await addMessage(req.zhisuoUser, conversation.id, {
-      role: 'user',
-      content: cleanQuestion,
-      status: 'complete',
+    if (regenerate) {
+      if (!assistantMessageId) {
+        throw new Error('assistantMessageId is required for regenerate');
+      }
+      const oldMessage = await getMessage(req.zhisuoUser, conversation.id, assistantMessageId);
+      if (!oldMessage) throw new Error('要重新生成的消息不存在');
+      await deleteMessage(req.zhisuoUser, conversation.id, assistantMessageId);
+    } else {
+      userMessage = await addMessage(req.zhisuoUser, conversation.id, {
+        role: 'user',
+        content: cleanQuestion,
+        status: 'complete',
+      });
+    }
+    send('meta', {
+      conversationId: conversation.id,
+      userMessageId: userMessage?.id || null,
+      regenerate: Boolean(regenerate),
     });
-    sendSse(res, 'meta', { conversationId: conversation.id, userMessageId: userMessage.id });
 
     const exactTerm = extractSearchTerm(cleanQuestion);
     const [exactResult, hybridResult] = await Promise.allSettled([
       pdfsearch.exact(exactTerm, 8),
       pdfsearch.hybrid(cleanQuestion, 8),
     ]);
-    exactRaw = exactResult.status === 'fulfilled' ? exactResult.value?.results || [] : [];
-    similarRaw = hybridResult.status === 'fulfilled' ? hybridResult.value?.results || [] : [];
+    const exactRaw = exactResult.status === 'fulfilled' ? exactResult.value?.results || [] : [];
+    const similarRaw = hybridResult.status === 'fulfilled' ? hybridResult.value?.results || [] : [];
     exact = exactRaw.map((item) => toFrontendChunk(item));
     similar = similarRaw.map((item) => toFrontendChunk(item));
-    sendSse(res, 'citations', { exact, similar });
+    send('citations', { exact, similar });
 
     const chunks = uniqueResults(exactRaw, similarRaw);
     if (llm.enabled && chunks.length) {
@@ -668,13 +760,22 @@ app.post('/api/chat/stream', requireSession, async (req, res) => {
           role: 'system',
           content: '你是知索，一个严谨的中文知识库助手。只能依据检索资料回答；资料不足时明确说明，不要编造。回答简洁，并保留来源信息。',
         },
-        { role: 'user', content: `问题：${cleanQuestion}\n\n检索资料：\n${evidence}` },
-      ], (token) => sendSse(res, 'token', { token }));
+        { role: 'user', content: `问题：${cleanQuestion}
+
+检索资料：
+${evidence}` },
+      ], (token) => {
+        streamedAnswer += token;
+        send('token', { token });
+      }, { signal: abortController.signal });
     } else {
       answer = chunks.length
-        ? `我在 pdf-search 中找到了以下相关内容：\n\n${chunks[0].content.slice(0, 1200)}`
+        ? `我在 pdf-search 中找到了以下相关内容：
+
+${chunks[0].content.slice(0, 1200)}`
         : '没有在 pdf-search 中找到相关内容。';
-      sendSse(res, 'token', { token: answer });
+      streamedAnswer = answer;
+      send('token', { token: answer });
     }
 
     assistantMessage = await addMessage(req.zhisuoUser, conversation.id, {
@@ -685,29 +786,39 @@ app.post('/api/chat/stream', requireSession, async (req, res) => {
     });
     await addCitations(assistantMessage.id, 'exact', exact);
     await addCitations(assistantMessage.id, 'similar', similar);
-    sendSse(res, 'done', {
+    send('done', {
       conversationId: conversation.id,
-      userMessageId: userMessage.id,
+      userMessageId: userMessage?.id || null,
       assistantMessageId: assistantMessage.id,
       answer,
     });
-    res.end();
+    if (!closed) res.end();
   } catch (error) {
     const message = String(error?.message || error);
-    try {
-      if (conversation) {
+    const aborted = abortController.signal.aborted || error?.name === 'AbortError';
+    if (conversation) {
+      try {
         assistantMessage = await addMessage(req.zhisuoUser, conversation.id, {
           role: 'assistant',
-          content: '回答生成失败，请稍后重试。',
-          status: 'error',
-          errorMessage: message,
+          content: streamedAnswer || (aborted ? '已停止生成。' : '回答生成失败，请稍后重试。'),
+          status: aborted ? 'stopped' : 'error',
+          errorMessage: aborted ? null : message,
         });
+        await addCitations(assistantMessage.id, 'exact', exact);
+        await addCitations(assistantMessage.id, 'similar', similar);
+      } catch {
+        // Ignore persistence errors while reporting the original failure.
       }
-    } catch {
-      // Ignore persistence errors while reporting the original failure.
     }
-    sendSse(res, 'error', { message, conversationId: conversation?.id, userMessageId: userMessage?.id, assistantMessageId: assistantMessage?.id });
-    res.end();
+    if (!aborted) {
+      send('error', {
+        message,
+        conversationId: conversation?.id,
+        userMessageId: userMessage?.id || null,
+        assistantMessageId: assistantMessage?.id || null,
+      });
+    }
+    if (!closed) res.end();
   }
 });
 

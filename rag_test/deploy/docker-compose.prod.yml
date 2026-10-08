@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-zhisuo}
+      POSTGRES_USER: ${POSTGRES_USER:-zhisuo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhisuo}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhisuo} -d ${POSTGRES_DB:-zhisuo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "exec 3<>/dev/tcp/127.0.0.1/6333"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      PORT: 8787
+      DATABASE_URL: postgres://${POSTGRES_USER:-zhisuo}:${POSTGRES_PASSWORD:-zhisuo}@postgres:5432/${POSTGRES_DB:-zhisuo}
+      CONSOLE_USER: ${CONSOLE_USER:-admin}
+      CONSOLE_PASSWORD: ${CONSOLE_PASSWORD:-change-me-strong}
+      PDFSEARCH_BASE_URL: ${PDFSEARCH_BASE_URL}
+      PDFSEARCH_API_KEY: ${PDFSEARCH_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-524288000}
+      WORKER_ENABLED: ${WORKER_ENABLED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  caddy-data:
+  caddy-config:

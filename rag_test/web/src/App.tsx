@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Square,
   Server,
   Settings2,
   ShieldCheck,
@@ -124,6 +125,22 @@ function stripHtml(value: string) {
   return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function readCookie(name: string) {
+  const value = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  return value ? decodeURIComponent(value.slice(name.length + 1)) : '';
+}
+
+function csrfFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const headers = new Headers(init.headers || {});
+  const csrfToken = readCookie('zhisuo_csrf');
+  if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+  return window.fetch(input, {
+    ...init,
+    headers,
+    credentials: 'same-origin',
+  });
+}
+
 async function consumeSse(
   response: Response,
   onEvent: (event: string, payload: any) => void,
@@ -199,6 +216,7 @@ function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   const selectedDataset = useMemo(
     () => datasets.find((item) => item.id === selectedDatasetId),
@@ -218,7 +236,7 @@ function App() {
   }, [activeSession?.messages]);
 
   const api = useCallback(async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
-    const response = await fetch(`/api/ragflow${path}`, {
+    const response = await csrfFetch(`/api/ragflow${path}`, {
       ...init,
       headers: {
         ...(init.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
@@ -238,7 +256,7 @@ function App() {
 
   const checkSession = useCallback(async () => {
     try {
-      const response = await fetch('/api/auth/session');
+      const response = await csrfFetch('/api/auth/session');
       const payload = await response.json().catch(() => null);
       if (response.ok && payload?.authenticated) {
         setConsoleUser(payload.data?.username || 'admin');
@@ -254,7 +272,7 @@ function App() {
 
   const refreshHealth = useCallback(async () => {
     try {
-      const response = await fetch('/api/health');
+      const response = await csrfFetch('/api/health');
       setHealth(await response.json());
     } catch {
       setHealth(null);
@@ -263,7 +281,7 @@ function App() {
 
   const refreshConversations = useCallback(async () => {
     try {
-      const response = await fetch('/api/conversations');
+      const response = await csrfFetch('/api/conversations');
       const payload = await response.json().catch(() => null);
       if (response.status === 401) {
         setAuthState('anonymous');
@@ -377,7 +395,7 @@ function App() {
     setLoginLoading(true);
     setLoginError('');
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await csrfFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: loginUsername, password: loginPassword }),
@@ -396,7 +414,7 @@ function App() {
   };
 
   const logout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    await csrfFetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
     setAuthState('anonymous');
     setSystemOpen(false);
     setKnowledgeOpen(false);
@@ -418,7 +436,7 @@ function App() {
     setUserLoading(true);
     setUserError('');
     try {
-      const response = await fetch('/api/users');
+      const response = await csrfFetch('/api/users');
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '用户列表加载失败');
       setUsers(payload.data || []);
@@ -438,7 +456,7 @@ function App() {
     setUserLoading(true);
     setUserError('');
     try {
-      const response = await fetch('/api/users', {
+      const response = await csrfFetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
@@ -460,7 +478,7 @@ function App() {
     setUserLoading(true);
     setUserError('');
     try {
-      const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+      const response = await csrfFetch(`/api/users/${encodeURIComponent(userId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -479,7 +497,7 @@ function App() {
     setUserLoading(true);
     setUserError('');
     try {
-      const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      const response = await csrfFetch(`/api/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '删除用户失败');
       await refreshUsers();
@@ -516,7 +534,7 @@ function App() {
     const title = editingTitle.trim();
     if (title) {
       try {
-        await fetch(`/api/conversations/${encodeURIComponent(sessionId)}`, {
+        await csrfFetch(`/api/conversations/${encodeURIComponent(sessionId)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: title.slice(0, 80) }),
@@ -537,7 +555,7 @@ function App() {
 
   const deleteSession = async (sessionId: string) => {
     try {
-      await fetch(`/api/conversations/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      await csrfFetch(`/api/conversations/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
     } catch {
       // Remove local state even if the server request fails.
     }
@@ -594,7 +612,7 @@ function App() {
     if (!window.confirm(`确定删除《${document.name}》吗？`)) return;
     setWorkspaceLoading(true);
     try {
-      const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}`, { method: 'DELETE' });
+      const response = await csrfFetch(`/api/documents/${encodeURIComponent(document.id)}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '删除失败');
       await refreshDocuments();
@@ -609,7 +627,7 @@ function App() {
   const reindexPdf = async (document: RagDocument) => {
     setWorkspaceLoading(true);
     try {
-      const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/reindex`, { method: 'POST' });
+      const response = await csrfFetch(`/api/documents/${encodeURIComponent(document.id)}/reindex`, { method: 'POST' });
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || '重新索引失败');
       await refreshDocuments();
@@ -625,7 +643,10 @@ function App() {
     window.open(`/api/documents/${encodeURIComponent(document.id)}/download`, '_blank', 'noopener,noreferrer');
   };
 
-  const sendMessage = async (preset?: string) => {
+  const sendMessage = async (
+    preset?: string,
+    options: { regenerate?: boolean; assistantMessageId?: string } = {},
+  ) => {
     const question = (preset ?? input).trim();
     if (!question || sessionIsRunning) return;
 
@@ -637,12 +658,6 @@ function App() {
       setActiveSessionId(session.id);
     }
 
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: question,
-      createdAt: Date.now(),
-    };
     const assistantId = crypto.randomUUID();
     const pendingMessage: ChatMessage = {
       id: assistantId,
@@ -651,15 +666,23 @@ function App() {
       pending: true,
       createdAt: Date.now(),
     };
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: question,
+      createdAt: Date.now(),
+    };
 
     setInput('');
     setSessions((current) => current.map((session) => {
       if (session.id !== sessionId) return session;
-      const messages = [...session.messages, userMessage, pendingMessage];
+      const baseMessages = options.regenerate
+        ? session.messages.filter((message) => message.id !== options.assistantMessageId)
+        : [...session.messages, userMessage];
       return {
         ...session,
         title: session.messages.length === 0 ? question.slice(0, 18) : session.title,
-        messages,
+        messages: [...baseMessages, pendingMessage],
         updatedAt: Date.now(),
       };
     }));
@@ -675,11 +698,20 @@ function App() {
       }));
     };
 
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
     try {
-      const response = await fetch('/api/chat/stream', {
+      const response = await csrfFetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId: sessionId, question }),
+        body: JSON.stringify({
+          conversationId: sessionId,
+          question,
+          regenerate: Boolean(options.regenerate),
+          assistantMessageId: options.assistantMessageId,
+        }),
+        signal: controller.signal,
       });
       if (response.status === 401) {
         setAuthState('anonymous');
@@ -714,11 +746,31 @@ function App() {
       });
       if (!completed) throw new Error('回答连接提前结束');
     } catch (error) {
+      const aborted = controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError');
       patchAssistant({
-        content: error instanceof Error ? error.message : String(error),
-        error: true,
+        content: aborted
+          ? `${streamed}${streamed ? '\n\n' : ''}[已停止]`
+          : error instanceof Error ? error.message : String(error),
+        error: !aborted,
         pending: false,
       });
+      if (aborted) void refreshConversations();
+    } finally {
+      if (streamAbortRef.current === controller) streamAbortRef.current = null;
+    }
+  };
+
+  const stopGeneration = () => {
+    streamAbortRef.current?.abort();
+  };
+
+  const regenerateMessage = (sessionId: string, assistantId: string) => {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (!session) return;
+    const index = session.messages.findIndex((message) => message.id === assistantId);
+    const previousUser = [...session.messages.slice(0, Math.max(index, 0))].reverse().find((message) => message.role === 'user');
+    if (previousUser) {
+      void sendMessage(previousUser.content, { regenerate: true, assistantMessageId: assistantId });
     }
   };
 
@@ -879,7 +931,7 @@ function App() {
           ) : (
             <div className="message-list">
               {activeSession.messages.map((message) => (
-                <MessageBubble key={message.id} message={message} onSelectChunk={setPreviewChunk} />
+                <MessageBubble key={message.id} message={message} onSelectChunk={setPreviewChunk} onRegenerate={message.role === 'assistant' && activeSession ? () => regenerateMessage(activeSession.id, message.id) : undefined} />
               ))}
               <div ref={messagesEndRef} />
             </div>
@@ -908,9 +960,15 @@ function App() {
                   <span>上传 PDF</span>
                 </button>
                 <span>{completedCount ? `${completedCount} 份文档可检索` : '先上传资料再提问'}</span>
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!input.trim() || sessionIsRunning}>
-                  {sessionIsRunning ? <LoaderCircle size={18} className="spin" /> : <Send size={18} />}
-                </button>
+                {sessionIsRunning ? (
+                  <button className="send-button stop" onClick={stopGeneration} title="停止生成">
+                    <Square size={15} />
+                  </button>
+                ) : (
+                  <button className="send-button" onClick={() => void sendMessage()} disabled={!input.trim()}>
+                    <Send size={18} />
+                  </button>
+                )}
               </div>
             </div>
             <small>仅知识库检索 · Enter 发送 · Shift + Enter 换行</small>
@@ -1013,7 +1071,7 @@ function LoginScreen({
   );
 }
 
-function MessageBubble({ message, onSelectChunk }: { message: ChatMessage; onSelectChunk: (chunk: Chunk) => void }) {
+function MessageBubble({ message, onSelectChunk, onRegenerate }: { message: ChatMessage; onSelectChunk: (chunk: Chunk) => void; onRegenerate?: () => void }) {
   const sources = [...(message.exact || []), ...(message.similar || [])];
   if (message.role === 'user') {
     return <div className="message-row user"><div className="message-bubble">{message.content}</div></div>;
@@ -1028,6 +1086,9 @@ function MessageBubble({ message, onSelectChunk }: { message: ChatMessage; onSel
             <span className="typing"><i /><i /><i /></span>
           ) : (
             <p>{message.content}</p>
+          )}
+          {!message.pending && onRegenerate && (
+            <button className="message-regenerate" onClick={onRegenerate}><RefreshCw size={12} />重新生成</button>
           )}
         </div>
         {!!sources.length && !message.pending && (
@@ -1099,7 +1160,7 @@ function PdfEvidenceModal({ chunk, onClose }: { chunk: Chunk; onClose: () => voi
     }
     setLoading(true);
     setError('');
-    fetch(`/api/pdfsearch/documents/${encodeURIComponent(chunk.document_id)}/pages/${encodeURIComponent(String(chunk.page))}/image`)
+    csrfFetch(`/api/pdfsearch/documents/${encodeURIComponent(chunk.document_id)}/pages/${encodeURIComponent(String(chunk.page))}/image`)
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
         if (!response.ok || payload?.code !== 0) {

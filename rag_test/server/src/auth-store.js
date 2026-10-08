@@ -8,6 +8,14 @@ function sha256(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
 
+export function validatePassword(password) {
+  const value = String(password || '');
+  if (value.length < 8 || !/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
+    return '密码至少 8 位，且必须同时包含字母和数字';
+  }
+  return '';
+}
+
 export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
   const hash = scryptSync(String(password), salt, SCRYPT_KEY_LENGTH).toString('hex');
@@ -52,6 +60,8 @@ export async function findUserByUsername(username) {
 }
 
 export async function createUser(username, password, role = 'member') {
+  const passwordError = validatePassword(password);
+  if (passwordError) throw new Error(passwordError);
   const { rows } = await pool.query(
     `INSERT INTO users (id, username, password_hash, role)
      VALUES ($1, $2, $3, $4)
@@ -73,6 +83,8 @@ export async function updateUser(userId, patch) {
     fields.push(`status = $${values.length}`);
   }
   if (patch.password) {
+    const passwordError = validatePassword(patch.password);
+    if (passwordError) throw new Error(passwordError);
     values.push(hashPassword(patch.password));
     fields.push(`password_hash = $${values.length}`);
   }

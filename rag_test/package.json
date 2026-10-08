@@ -10,7 +10,8 @@
     "dev": "concurrently -n gateway,web -c blue,green \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w web && npm run build -w server",
     "start": "npm run start -w server",
-    "lint": "npm run lint -w web"
+    "lint": "npm run lint -w web",
+    "worker": "npm run worker -w server"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
