@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  CheckCircle2,
   ChevronRight,
   Download,
   FileText,
@@ -44,6 +45,35 @@ type HealthPayload = {
   ok: boolean;
   apiKeyConfigured?: boolean;
   checks: ServiceHealth[];
+};
+
+type ReviewIssue = {
+  id: string;
+  paragraphIndex: number;
+  issueType: string;
+  severity: string;
+  docId?: string;
+  fileName?: string;
+  page?: number;
+  blockId?: string;
+  bbox?: number[];
+  sourceText: string;
+  evidenceText: string;
+  suggestion: string;
+  reason: string;
+  confidence: number;
+  status: string;
+};
+
+type ReviewTask = {
+  id: string;
+  fileName: string;
+  status: string;
+  issueCount: number;
+  errorMessage?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  issues: ReviewIssue[];
 };
 
 type UserAccount = {
@@ -211,6 +241,10 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewTask, setReviewTask] = useState<ReviewTask | null>(null);
+  const [reviewUploading, setReviewUploading] = useState(false);
+  const [reviewError, setReviewError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [previewChunk, setPreviewChunk] = useState<Chunk | null>(null);
 
@@ -643,6 +677,41 @@ function App() {
     window.open(`/api/documents/${encodeURIComponent(document.id)}/download`, '_blank', 'noopener,noreferrer');
   };
 
+  const uploadWordReview = async (file: File) => {
+    setReviewUploading(true);
+    setReviewError('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await csrfFetch('/api/review/word', { method: 'POST', body: form });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.code !== 0) throw new Error(payload?.message || 'Word 审核失败');
+      setReviewTask(payload.data);
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReviewUploading(false);
+    }
+  };
+
+  const openReviewIssue = (issue: ReviewIssue) => {
+    if (!issue.docId || !issue.page) return;
+    setPreviewChunk({
+      id: issue.blockId || issue.id,
+      content: issue.evidenceText || issue.sourceText,
+      highlight: issue.evidenceText || issue.sourceText,
+      document_id: issue.docId,
+      document_keyword: issue.fileName || issue.docId,
+      dataset_id: 'pdfsearch',
+      similarity: issue.confidence,
+      term_similarity: issue.confidence,
+      vector_similarity: issue.confidence,
+      page: issue.page,
+      positions: [issue.page],
+      bbox: issue.bbox || [],
+    });
+  };
+
   const sendMessage = async (
     preset?: string,
     options: { regenerate?: boolean; assistantMessageId?: string } = {},
@@ -896,6 +965,11 @@ function App() {
             <span className="sidebar-tool-copy"><strong>知识库</strong><small>{completedCount} 份文档已入库</small></span>
             <ChevronRight size={15} />
           </button>
+          <button className="sidebar-tool" onClick={() => setReviewOpen(true)}>
+            <span className="sidebar-tool-icon"><FileText size={17} /></span>
+            <span className="sidebar-tool-copy"><strong>Word 审核</strong><small>{reviewTask ? `${reviewTask.issueCount} 个问题` : '检查一致性错误'}</small></span>
+            <ChevronRight size={15} />
+          </button>
           <button className="sidebar-tool" onClick={() => setSystemOpen(true)}>
             <span className="sidebar-tool-icon"><Settings2 size={17} /></span>
             <span className="sidebar-tool-copy"><strong>系统设置</strong><small>服务状态与退出</small></span>
@@ -1001,6 +1075,17 @@ function App() {
           onReindex={reindexPdf}
           onDownload={downloadPdf}
           onClose={() => setKnowledgeOpen(false)}
+        />
+      )}
+
+      {reviewOpen && (
+        <WordReviewDrawer
+          task={reviewTask}
+          uploading={reviewUploading}
+          error={reviewError}
+          onUpload={uploadWordReview}
+          onOpenIssue={openReviewIssue}
+          onClose={() => setReviewOpen(false)}
         />
       )}
 
@@ -1308,6 +1393,69 @@ function KnowledgeDrawer({
           )}
         </div>
         <p className="drawer-footnote">{dataset ? '所有 PDF 自动进入当前唯一知识库。' : '正在准备知识库…'}</p>
+      </aside>
+    </div>
+  );
+}
+
+function WordReviewDrawer({
+  task,
+  uploading,
+  error,
+  onUpload,
+  onOpenIssue,
+  onClose,
+}: {
+  task: ReviewTask | null;
+  uploading: boolean;
+  error: string;
+  onUpload: (file: File) => void;
+  onOpenIssue: (issue: ReviewIssue) => void;
+  onClose: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="drawer-backdrop" onClick={onClose}>
+      <aside className="drawer review-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="drawer-header">
+          <div><span className="eyebrow">一致性审核</span><h2>Word 审核</h2><p className="drawer-user">检查表述、数值、单位和逻辑错误</p></div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭 Word 审核"><X size={19} /></button>
+        </div>
+        <div className="drawer-upload" onClick={() => inputRef.current?.click()}>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            hidden
+            onChange={(event) => event.target.files?.[0] && onUpload(event.target.files[0])}
+          />
+          {uploading ? <LoaderCircle size={25} className="spin" /> : <UploadCloud size={25} />}
+          <div><strong>{uploading ? '正在审核…' : '上传 Word 文件'}</strong><span>支持 .docx，审核完成后可点击问题查看 PDF 证据。</span></div>
+        </div>
+        {error && <div className="user-admin-error"><XCircle size={14} />{error}</div>}
+        {task && (
+          <div className="review-summary">
+            <div><strong>{task.issueCount}</strong><span>疑似问题</span></div>
+            <div><strong>{task.status === 'done' ? '已完成' : task.status}</strong><span>{task.fileName}</span></div>
+          </div>
+        )}
+        <div className="review-issue-list">
+          {(task?.issues || []).map((issue) => (
+            <button className="review-issue" key={issue.id} onClick={() => onOpenIssue(issue)}>
+              <div className="review-issue-head">
+                <span className={`review-type ${issue.severity}`}>{issue.issueType}</span>
+                {issue.page ? <span>第 {issue.page} 页</span> : null}
+                <span>{Math.round(issue.confidence * 100)}%</span>
+              </div>
+              <p><strong>原文：</strong>{issue.sourceText}</p>
+              {issue.evidenceText && <p><strong>证据：</strong>{issue.evidenceText}</p>}
+              <p><strong>建议：</strong>{issue.suggestion || '需人工复核'}</p>
+              <p className="review-reason">{issue.reason}</p>
+            </button>
+          ))}
+          {!task && !uploading && <div className="drawer-empty"><FileText size={30} /><strong>还没有审核结果</strong><span>上传 .docx 后开始检查。</span></div>}
+          {task && !task.issues.length && <div className="drawer-empty"><CheckCircle2 size={30} /><strong>未发现明显问题</strong></div>}
+        </div>
       </aside>
     </div>
   );

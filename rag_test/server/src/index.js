@@ -8,6 +8,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createPdfSearchProvider } from './pdfsearch-provider.js';
 import { createLlmProvider } from './llm-provider.js';
 import { startIndexWorker } from './index-worker.js';
+import { reviewWordFile } from './word-review.js';
+import { addReviewIssues, createReviewTask, getReviewTask, listReviewTasks, updateReviewTask } from './review-store.js';
 import { initDb, checkDb } from './db.js';
 import {
   createAuthSession,
@@ -820,6 +822,45 @@ ${chunks[0].content.slice(0, 1200)}`
     }
     if (!closed) res.end();
   }
+});
+
+app.post('/api/review/word', requireSession, uploadRateLimit, upload.single('file'), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ code: 400, message: '请上传 Word 文件' });
+  if (!/\.docx$/i.test(file.originalname)) {
+    await unlink(file.path).catch(() => null);
+    return res.status(400).json({ code: 400, message: '当前仅支持 .docx 文件' });
+  }
+  let task = await createReviewTask(req.zhisuoUser, file.originalname);
+  try {
+    const result = await reviewWordFile({ filePath: file.path, pdfsearch, llm });
+    await addReviewIssues(task.id, result.issues);
+    task = await updateReviewTask(req.zhisuoUser, task.id, {
+      status: 'done',
+      issueCount: result.issues.length,
+    });
+    const complete = await getReviewTask(req.zhisuoUser, task.id);
+    return res.json({ code: 0, data: complete });
+  } catch (error) {
+    await updateReviewTask(req.zhisuoUser, task.id, {
+      status: 'failed',
+      errorMessage: String(error?.message || error),
+    });
+    return res.status(500).json({ code: 500, message: String(error?.message || error) });
+  } finally {
+    await unlink(file.path).catch(() => null);
+  }
+});
+
+app.get('/api/review/tasks', requireSession, async (req, res) => {
+  const tasks = await listReviewTasks(req.zhisuoUser);
+  return res.json({ code: 0, data: tasks });
+});
+
+app.get('/api/review/tasks/:taskId', requireSession, async (req, res) => {
+  const task = await getReviewTask(req.zhisuoUser, req.params.taskId);
+  if (!task) return res.status(404).json({ code: 404, message: '审核任务不存在' });
+  return res.json({ code: 0, data: task });
 });
 
 const webDist = path.resolve(__dirname, '../../web/dist');

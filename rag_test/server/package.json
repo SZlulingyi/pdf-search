@@ -13,6 +13,7 @@
     "express": "^4.21.2",
     "http-proxy-middleware": "^3.0.5",
     "pg": "^8.16.3",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "mammoth": "^1.11.0"
   }
 }

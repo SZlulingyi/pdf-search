@@ -68,6 +68,37 @@ export async function initDb() {
       UNIQUE(user_id, file_hash)
     );
 
+    CREATE TABLE IF NOT EXISTS review_tasks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'processing',
+      issue_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS review_issues (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES review_tasks(id) ON DELETE CASCADE,
+      paragraph_index INTEGER NOT NULL DEFAULT 0,
+      issue_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'medium',
+      doc_id TEXT,
+      file_name TEXT,
+      page INTEGER,
+      block_id TEXT,
+      bbox JSONB,
+      source_text TEXT NOT NULL DEFAULT '',
+      evidence_text TEXT NOT NULL DEFAULT '',
+      suggestion TEXT NOT NULL DEFAULT '',
+      reason TEXT NOT NULL DEFAULT '',
+      confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS message_citations (
       id TEXT PRIMARY KEY,
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -86,6 +117,10 @@ export async function initDb() {
       ON messages(conversation_id, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_citations_message
       ON message_citations(message_id);
+    CREATE INDEX IF NOT EXISTS idx_review_tasks_user_created
+      ON review_tasks(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_review_issues_task
+      ON review_issues(task_id);
   `);
 }
 
